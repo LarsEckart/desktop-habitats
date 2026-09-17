@@ -1,4 +1,4 @@
-# Handoff: aquascape composition revision
+# Handoff: aquascape and atmosphere
 
 This is an interactive freshwater aquarium built with WebGL2, vendored Three.js 0.180, and custom GLSL. The latest request was to make the composition, the wood, stones and plants and their density, arrangement and amount, genuinely pleasing to the eye at the standard of a professionally arranged riverbed aquascape, without being too clean. The composition revision is complete and packaged in `freshwater-aquarium.zip`.
 
@@ -40,3 +40,11 @@ Keep future changes scoped. Verify visual claims in the running scene; numeric b
 ## Wrap-up verification
 
 On 2026-09-17, `npm run check`, `npm test`, and `git diff --check` passed. The live full view rendered without browser console warnings or errors. The behaviour test still covers two simulated minutes with all 24 fish exploring width, depth and height. The test now imports the scene’s grass volumes instead of duplicating them.
+
+## Atmosphere pass
+
+The final atmosphere pass triples suspended debris from 260 to 780 flecks while keeping 120 plant bubbles. The flecks have a finer size distribution and softer opacity. `scene.fog` in `src/main.js` provides a faint green-blue tint that strengthens with viewing depth. `surfaceLightGLSL` in `src/water.js` adds broad, spatially varying illumination with periods of roughly 43 and 86 seconds and a combined amplitude bounded by 3.6%. It uses the same paused clock as the current and fish. The existing render passes and composition remain in place.
+
+Atmosphere captures and verification are in `review/atmosphere-round-1/`.
+
+The atmosphere passed one independent review (36/40, scoped to this pass). Pause captures were byte-identical three seconds apart and resume worked. Syntax, fish-behaviour and diff checks passed; browser warning/error logs were empty.
