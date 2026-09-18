@@ -1,0 +1,65 @@
+{
+  "gpu": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+  "width": 2560,
+  "height": 1440,
+  "vertices": 1510092,
+  "triangles": 2029012,
+  "plantVertices": 645455,
+  "plantTriangles": 977586,
+  "settings": null,
+  "timings": [
+    {
+      "ms": 46596.40000000002,
+      "calls": 58,
+      "triangles": 3798364,
+      "contextLost": false,
+      "error": 0,
+      "pixel": [
+        205,
+        192,
+        139,
+        255
+      ]
+    },
+    {
+      "ms": 34335.5,
+      "calls": 58,
+      "triangles": 3798364,
+      "contextLost": false,
+      "error": 0,
+      "pixel": [
+        205,
+        192,
+        139,
+        255
+      ]
+    },
+    {
+      "ms": 33485.90000000002,
+      "calls": 58,
+      "triangles": 3798364,
+      "contextLost": false,
+      "error": 0,
+      "pixel": [
+        205,
+        192,
+        138,
+        255
+      ]
+    },
+    {
+      "ms": 32962.59999999998,
+      "calls": 58,
+      "triangles": 3798364,
+      "contextLost": false,
+      "error": 0,
+      "pixel": [
+        205,
+        191,
+        138,
+        255
+      ]
+    }
+  ],
+  "errors": []
+}

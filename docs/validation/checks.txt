@@ -1,0 +1,18 @@
+Riverscape source validation
+
+v22.16.0
+
+> desktop-habitats@1.0.0 check
+> node --check serve.mjs && for f in scenes/*/src/*.js; do node --check "$f" || exit 1; done
+
+
+> desktop-habitats@1.0.0 test
+> node scenes/riverscape/tests/fish-behavior.mjs && node scenes/riverscape/tests/render-policy.mjs && node scenes/riverscape/tests/plant-budget.mjs
+
+PASS: 120 simulated seconds; 24/24 fish explored all three dimensions; 44% of travel was quiet-tail gliding; calm tail beats at most 3.81 Hz; 11855 inspection frames; 34297 fish-frames behind the grass; 56% of hovering fish facing upstream; minimum sampled spacing 0.610; slow approach gave room (1.48 to 2.54) without a startle; a lunge startled 4 fish directly and 11 in all, peaking at 4.96 units per second; a pinch of 8 pellets drew 17 fish over 14.3 seconds, 8 taken in 13 strikes, crowding to 0.63 at the food and opening back out to 1.53.
+PASS: render budgets, zero-size/large targets, 20/30/60 fps pacing at 60/120 Hz, stop/resume, reduced motion, hidden invalidation and zero idle callbacks
+PASS: rear ribbons 1536 -> 1075; rear triangles 552960 -> 86000; foreground attributes and downstream RNG byte-for-byte unchanged
+
+Combined status: 0
+Swift syntax parse: PASS (not macOS framework typechecking)
+Git whitespace check: PASS

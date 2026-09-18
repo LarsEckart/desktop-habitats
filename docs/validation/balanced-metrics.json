@@ -1,0 +1,96 @@
+{
+  "gpu": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+  "width": 1600,
+  "height": 900,
+  "vertices": 1239626,
+  "triangles": 1553492,
+  "plantVertices": 374989,
+  "plantTriangles": 502066,
+  "settings": {
+    "profile": "balanced",
+    "onBattery": false,
+    "resolution": 1.25,
+    "framebuffer": [
+      1600,
+      900
+    ],
+    "samples": 4,
+    "shadowSize": 2048,
+    "shadowHz": 30,
+    "renderedFrames": 5,
+    "shadowFrames": 2,
+    "simulationTime": 0.05,
+    "drawCalls": 38,
+    "triangles": 1688362,
+    "plants": {
+      "backgroundCandidates": 1564,
+      "backgroundKept": 1094,
+      "backgroundVertices": 68922,
+      "backgroundTriangles": 87520,
+      "vertices": 374989,
+      "triangles": 502066
+    },
+    "loop": {
+      "fps": 0,
+      "paused": true,
+      "hidden": false,
+      "running": false,
+      "pending": false
+    }
+  },
+  "timings": [
+    {
+      "ms": 30212.400000000023,
+      "calls": 38,
+      "triangles": 1688362,
+      "contextLost": false,
+      "error": 0,
+      "pixel": [
+        204,
+        191,
+        136,
+        255
+      ]
+    },
+    {
+      "ms": 15352,
+      "calls": 38,
+      "triangles": 1688362,
+      "contextLost": false,
+      "error": 0,
+      "pixel": [
+        204,
+        190,
+        136,
+        255
+      ]
+    },
+    {
+      "ms": 13674.099999999977,
+      "calls": 58,
+      "triangles": 2847324,
+      "contextLost": false,
+      "error": 0,
+      "pixel": [
+        204,
+        190,
+        135,
+        255
+      ]
+    },
+    {
+      "ms": 13022.699999999953,
+      "calls": 38,
+      "triangles": 1688362,
+      "contextLost": false,
+      "error": 0,
+      "pixel": [
+        203,
+        190,
+        135,
+        255
+      ]
+    }
+  ],
+  "errors": []
+}
