@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 register("./three-loader.mjs", import.meta.url);
 const THREE = await import("three");
 const { BOUNDS, COUNT, createFishSchool } = await import("../src/fish.js");
+const { bloodfinTetra } = await import("../src/fish-species.js");
 const { createFood } = await import("../src/food.js");
 const { shelteredVelocity } = await import("../src/water.js");
 const { THICKETS } = await import("../src/plants.js");
@@ -22,6 +23,15 @@ const insideTank = (p) =>
   p.y <= BOUNDS.maxY &&
   p.z >= BOUNDS.minZ &&
   p.z <= BOUNDS.maxZ;
+
+// The school takes its visual parts and body measures from a species definition, rather
+// than importing the bloodfin's shape directly. A future species can replace these hooks.
+const speciesScene = new THREE.Scene();
+const testSpecies = { ...bloodfinTetra, name: "Species seam test fish" };
+const speciesSchool = createFishSchool(speciesScene, { species: testSpecies });
+speciesSchool.update(STEP, 0, null);
+assert.equal(speciesScene.getObjectByName(testSpecies.name).count, COUNT);
+assert.ok(speciesSchool.fish.every((fish) => fish.position.toArray().every(Number.isFinite)));
 
 // Two undisturbed minutes: individuals cross the tank, alternate strokes with glides,
 // stay apart, investigate the planting, and face into the current during short rests.
@@ -43,7 +53,7 @@ let travelling = 0,
   beatingInPlace = 0,
   peakBeatFrequency = 0;
 const swimAttribute = scene
-  .getObjectByName("Silver-blue freshwater fish")
+  .getObjectByName(bloodfinTetra.name)
   .geometry.getAttribute("aSwim");
 const tracks = school.fish.map((fish) => ({
   minimum: fish.position.clone(),

@@ -1,13 +1,7 @@
 import * as THREE from "three";
 import { groundHeight, randomGenerator, smoothstep } from "./math.js";
 import { flowDirectionAt, shelteredVelocity, thicketAt } from "./water.js";
-import {
-  applySkin,
-  createFishMaterials,
-  makeAnatomy,
-  SNOUT_X,
-  STANDARD_LENGTH,
-} from "./fish-anatomy.js";
+import { bloodfinTetra } from "./fish-species.js";
 
 export const COUNT = 24;
 // The whole water column the fish may use. The floor is the sand, tracked separately.
@@ -336,13 +330,14 @@ const SWIM_GLSL = /* glsl */ `
   }
 `;
 
-function applySwimming(material, withColor = true) {
+function applySwimming(material, species) {
+  const applySkin = species?.applySkin;
   material.onBeforeCompile = (shader) => {
     shader.vertexShader = shader.vertexShader.replace(
       "#include <common>",
       `#include <common>\n${SWIM_GLSL}`,
     );
-    if (withColor) {
+    if (applySkin) {
       shader.vertexShader = shader.vertexShader
         .replace(
           "#include <beginnormal_vertex>",
@@ -372,7 +367,7 @@ function applySwimming(material, withColor = true) {
     }
   };
   material.customProgramCacheKey = () =>
-    `riverscape-fish-${withColor ? "skin" : "depth"}-4`;
+    `riverscape-fish-${species?.shaderKey ?? "depth"}-4`;
 }
 
 function clampToBox(position, box, margin = 0) {
@@ -408,12 +403,19 @@ function rotateAboutY(v, angle) {
 
 export function createFishSchool(
   scene,
-  { obstacles = [], landmarks = [], thickets = [], food = null } = {},
+  {
+    obstacles = [],
+    landmarks = [],
+    thickets = [],
+    food = null,
+    species = bloodfinTetra,
+  } = {},
 ) {
+  const { snoutX, standardLength } = species.measurements;
   const random = randomGenerator(583137);
   const range = (min, max) => min + random() * (max - min);
   const exponential = (mean) => -mean * Math.log(1 - random());
-  const geometry = makeAnatomy();
+  const geometry = species.createAnatomy();
   const swimAttribute = new THREE.InstancedBufferAttribute(
     new Float32Array(COUNT * 4),
     4,
@@ -427,16 +429,16 @@ export function createFishSchool(
   geometry.fins.setAttribute("aSwim", swimAttribute);
   geometry.body.setAttribute("aFinPhase", finPhaseAttribute);
   geometry.fins.setAttribute("aFinPhase", finPhaseAttribute);
-  const { skin: skinMaterial, fins: finMaterial } = createFishMaterials();
+  const { skin: skinMaterial, fins: finMaterial } = species.createMaterials();
   const depthMaterial = new THREE.MeshDepthMaterial({
     depthPacking: THREE.RGBADepthPacking,
   });
-  applySwimming(skinMaterial);
-  applySwimming(finMaterial);
-  applySwimming(depthMaterial, false);
+  applySwimming(skinMaterial, species);
+  applySwimming(finMaterial, species);
+  applySwimming(depthMaterial);
   const bodies = new THREE.InstancedMesh(geometry.body, skinMaterial, COUNT);
   const membranes = new THREE.InstancedMesh(geometry.fins, finMaterial, COUNT);
-  bodies.name = "Silver-blue freshwater fish";
+  bodies.name = species.name;
   membranes.name = "Attached translucent fish fins";
   bodies.castShadow = true;
   bodies.receiveShadow = true;
@@ -1223,7 +1225,7 @@ export function createFishSchool(
         if (f.mode === "feed") {
           // A fish eats with its snout, and at these distances the difference between its
           // snout and its centre is most of the reach of a strike.
-          mouth.copy(position).addScaledVector(heading, SNOUT_X * f.scale);
+          mouth.copy(position).addScaledVector(heading, snoutX * f.scale);
           bite.subVectors(f.food.position, mouth);
           foodDistance = bite.length();
           // Pursuit lags: the fish steers at where it saw the pellet a fraction of a
@@ -1290,7 +1292,7 @@ export function createFishSchool(
           f.mode === "inspect" ||
           // Fish packed around one pellet is exactly when a crowding flick matters most,
           // but not in the last body length: a fish about to strike holds its line.
-          (f.mode === "feed" && foodDistance > FORAGE.brakeRange * STANDARD_LENGTH))
+          (f.mode === "feed" && foodDistance > FORAGE.brakeRange * standardLength))
       )
         twitch(f, separation);
 
@@ -1363,7 +1365,7 @@ export function createFishSchool(
           desired.multiplyScalar(speed / remaining);
         } else desired.set(0, 0, 0);
       } else if (mode === "feed") {
-        const length = STANDARD_LENGTH * f.scale;
+        const length = standardLength * f.scale;
         // How much faster than a stalk this fish arrived, which is what spoils its aim
         // and what makes its bow wave push the pellet away.
         const hurried = THREE.MathUtils.clamp(
@@ -1485,7 +1487,7 @@ export function createFishSchool(
           steer = true;
         } else if (
           f.mode === "feed" &&
-          foodDistance < FORAGE.brakeRange * STANDARD_LENGTH * f.scale
+          foodDistance < FORAGE.brakeRange * standardLength * f.scale
         ) {
           // Close in, the body lines up with the pellet rather than with wherever the
           // sum of every other pull points: head down for one on the sand and head up for
@@ -1548,7 +1550,7 @@ export function createFishSchool(
         // The pectorals come out at the end of an approach, and the fish is able to back
         // water far harder than it ever needs to while cruising.
         const braking =
-          f.mode === "feed" && foodDistance < FORAGE.brakeRange * STANDARD_LENGTH * f.scale
+          f.mode === "feed" && foodDistance < FORAGE.brakeRange * standardLength * f.scale
             ? SWIM.feedBrake
             : SWIM.brake;
         if (f.stroke && (elapsed >= f.stroke.end || forward < -braking)) {
@@ -1621,7 +1623,7 @@ export function createFishSchool(
             : // Flared through the brake and held out through the stalk: the single most
               // legible "this fish is about to eat something" pose in the sequence.
               f.mode === "feed"
-              ? foodDistance < FORAGE.brakeRange * STANDARD_LENGTH * f.scale && !flick
+              ? foodDistance < FORAGE.brakeRange * standardLength * f.scale && !flick
                 ? 0.9
                 : 0
               : f.mode === "hover" && !flick

@@ -130,11 +130,19 @@ Riverscape lives in `scenes/riverscape/`, including its textures and tests. Futu
 | --- | --- |
 | `scenes/riverscape/index.html`, `wallpaper.html`, `style.css` | Riverscape's preview and wallpaper layouts |
 | `scenes/riverscape/src/` | Fish, feeding, plants, water, terrain and rendering |
+| `scenes/riverscape/src/fish-species.js` | The active fish species definition |
 | `scenes/riverscape/assets/` | Rock, wood and sand textures |
 | `scenes/riverscape/tests/` | Riverscape's headless simulation checks |
 | `wallpaper/` | Mac app and install/uninstall scripts |
 | `vendor/` | Bundled Three.js library and license |
 | `index.html`, `serve.mjs` | Default preview entry and local server |
+
+### Adding a fish species
+
+`fish-species.js` defines the current bloodfin tetra. A species provides its mesh builder,
+materials, skin-shader hook, name, and body measurements. `createFishSchool()` takes a
+`species` option, so another species can bring its own anatomy and shader while sharing the
+tank, movement, feeding, and cursor interaction.
 
 Run the checks with Node.js:
 
