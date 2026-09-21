@@ -62,6 +62,145 @@ final class Reporter: NSObject, WKScriptMessageHandler {
   }
 }
 
+/// A Swift string as a full JavaScript string literal (JSON state and ids travel through
+/// these injection points, so the escaping must be correct no matter the content). JSON's
+/// own encoding is the only escaping that provably covers every character — backslashes,
+/// double quotes, \n, \t, \r and CRLF, which a hand-rolled escape list can silently miss. A
+/// malformed save that carries raw control characters must still be injected correctly, not
+/// drop the whole document-start script. The two JSON line separators (U+2028/U+2029) are
+/// then escaped explicitly as well, so the literal is safe inside XHTML/<script> on every
+/// JS engine, historical or modern.
+func jsStringLiteral(_ s: String) -> String {
+  guard let data = try? JSONEncoder().encode(s), let literal = String(data: data, encoding: .utf8)
+  else { return "\"\"" }
+  return literal
+    .replacingOccurrences(of: "\u{2028}", with: "\\u2028")
+    .replacingOccurrences(of: "\u{2029}", with: "\\u2029")
+}
+
+/// Keeps every display's population outside the app bundle, so a reinstall or update —
+/// which rebuilds the bundle from scratch (see install.sh) — never resets a tank. A brand
+/// is a stable id per display, remembered across runs so reconnecting a screen restores
+/// its own fish. The identity is the display's NSScreenNumber (its CGDirectDisplayID), the
+/// best stable handle a wallpaper-app agent is given; a display that keeps its id across a
+/// replug keeps its tank too, and this mapping is what that depends on.
+final class TankStore {
+  static let shared = TankStore()
+  private let tanksDir: URL
+  private let mappingURL: URL
+
+  init() {
+    let support = FileManager.default.urls(
+      for: .applicationSupportDirectory, in: .userDomainMask).first!
+      .appendingPathComponent("Desktop Habitats", isDirectory: true)
+    tanksDir = support.appendingPathComponent("tanks", isDirectory: true)
+    mappingURL = support.appendingPathComponent("displays.json")
+    try? FileManager.default.createDirectory(at: tanksDir, withIntermediateDirectories: true)
+  }
+
+  private var mapping: [String: String] {
+    get {
+      guard let data = try? Data(contentsOf: mappingURL),
+        let dict = try? JSONSerialization.jsonObject(with: data) as? [String: String]
+      else { return [:] }
+      return dict
+    }
+    set {
+      if let data = try? JSONSerialization.data(withJSONObject: newValue) {
+        try? data.write(to: mappingURL, options: .atomic)
+      }
+    }
+  }
+
+  /// Fallback display identities, keyed by the NSScreen object's identity for the lifetime
+  /// of this process. When a display number cannot be read there is no hardware identity to
+  /// fall back on, so each such screen is given one unique key *for this run* — and reused
+  /// on every later call, so the layout check, the tank lookup and every screen notification
+  /// all agree on the same id. A fresh UUID per call would make each notification look like
+  /// a brand-new display and spawn a fresh tank every time. Caveat: the key derives from the
+  /// NSScreen object identity, so it cannot match a screen across a restart, and (rarely,
+  /// if AppKit hands out a new instance for the same panel) it is not guaranteed to match the
+  /// same physical panel across notifications. Full physical matching needs the display
+  /// number to read; see docs/saved-state.md.
+  private var fallbackDisplayID: [ObjectIdentifier: String] = [:]
+
+  /// The display's persistent hardware identity. `NSScreenNumber` (a CGDirectDisplayID) is
+  /// transient: a replug can hand the same physical panel a different number, so it cannot
+  /// be trusted to reconnect a screen to its own tank. `CGDisplayCreateUUIDFromDisplayID`
+  /// derives a UUID that is stable for a given physical display, which is what actually
+  /// lets a reconnected screen come back to its own population. Returns nil when the
+  /// display number cannot be read.
+  func physicalID(for screen: NSScreen) -> String? {
+    guard
+      let id =
+        (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?
+        .uint32Value,
+      let uuid = CGDisplayCreateUUIDFromDisplayID(CGDirectDisplayID(id))?.takeRetainedValue()
+    else { return nil }
+    return (CFUUIDCreateString(nil, uuid) as String?) ?? nil
+  }
+
+  func identity(for screen: NSScreen) -> String {
+    // Prefer the persistent physical display UUID, so a reconnected panel comes back to its
+    // own tank. When the display number cannot be read, we must NOT fall back to a single
+    // shared "unknown" (that would map every unidentifiable screen to the SAME tank and have
+    // them overwrite each other), and we must NOT mint a fresh UUID on every call (that
+    // would make every screen notification look like a display replacement). Instead each
+    // unidentifiable screen reuses one per-object fallback id for the process lifetime, so
+    // identity(for:) always agrees with itself — the layout check, tankId(for:) and the
+    // rebuild all see the same key. Caveat: that key cannot match a screen across a restart,
+    // so such a screen starts a fresh tank each run; documented under the display-mapping
+    // caveat in docs/saved-state.md.
+    if let physical = physicalID(for: screen) { return physical }
+    let key = ObjectIdentifier(screen)
+    if let existing = fallbackDisplayID[key] { return existing }
+    let id = "unidentifiable-\(UUID().uuidString)"
+    fallbackDisplayID[key] = id
+    return id
+  }
+
+  /// The stable, persistent id for the tank on this screen, assigned once and remembered.
+  func tankId(for screen: NSScreen) -> String {
+    let key = identity(for: screen)
+    var mapping = self.mapping
+    if let existing = mapping[key] { return existing }
+    let id = UUID().uuidString
+    mapping[key] = id
+    self.mapping = mapping
+    return id
+  }
+
+  /// The current population text for a tank, or nil the first time it runs.
+  func load(_ id: String) -> String? {
+    try? String(contentsOf: tankURL(id), encoding: .utf8)
+  }
+
+  func save(_ id: String, _ text: String) {
+    // The page bounds a save's size; refuse anything absurd rather than write unlimited data.
+    // Atomic writes ensure a half-written tank file (a crash mid-write) never looks like a
+    // valid-but-corrupt record to the next launch.
+    guard !id.isEmpty, text.count <= 2_000_000, let data = text.data(using: .utf8) else { return }
+    try? data.write(to: tankURL(id), options: .atomic)  // best effort: a failed save must not stop the scene
+  }
+
+  private func tankURL(_ id: String) -> URL {
+    tanksDir.appendingPathComponent("\(id).json")
+  }
+}
+
+/// Receives population saves from a page and writes them to that display's tank file.
+final class TankSaveHandler: NSObject, WKScriptMessageHandler {
+  private let tankId: String
+  private let store: TankStore
+  init(tankId: String, store: TankStore) { self.tankId = tankId; self.store = store }
+  func userContentController(
+    _ controller: WKUserContentController, didReceive message: WKScriptMessage
+  ) {
+    guard let text = message.body as? String else { return }
+    store.save(tankId, text)
+  }
+}
+
 /// A window that keeps the exact frame it is given. AppKit insets ordinary windows from
 /// the screen edges; a wallpaper has to reach them.
 final class DesktopWindow: NSWindow {
@@ -74,6 +213,9 @@ final class DesktopWindow: NSWindow {
 final class Wallpaper: NSObject, WKNavigationDelegate {
   let window: DesktopWindow
   let view: WKWebView
+  // This screen's tank id, resolved once and stored so the page's saves and the explicit
+  // host flush both write to the same tank even a while after the window was set up.
+  private let tankId: String
   private var loaded = false
   private var inside = false
   private var rate = 0
@@ -83,8 +225,22 @@ final class Wallpaper: NSObject, WKNavigationDelegate {
     let settings = WKWebViewConfiguration()
     settings.setURLSchemeHandler(SceneHandler(root: root), forURLScheme: sceneScheme)
     settings.suppressesIncrementalRendering = true
-    // The page holds no state worth keeping between runs and should never leave traces.
+    // The page holds no WebKit-local state worth keeping between runs: the only durable
+    // state is the tank's population, which travels through the host bridge below into a
+    // real file, never through this datastore (so the store is kept non-persistent).
     settings.websiteDataStore = .nonPersistent()
+    // Load this display's tank so its population survives a restart. Keep the identity and
+    // initial state on globals the page's storage adapter reads at startup, and hand every
+    // save back to the host through a WebKit message instead of a browser datastore.
+    let tank = TankStore.shared
+    tankId = tank.tankId(for: screen)
+    let initialLiteral = tank.load(tankId).map(jsStringLiteral) ?? "null"
+    settings.userContentController.addUserScript(
+      WKUserScript(
+        source: "window.habitatTankId = \(jsStringLiteral(tankId));\n"
+          + "window.habitatTankInitial = \(initialLiteral);",
+        injectionTime: .atDocumentStart, forMainFrameOnly: true))
+    settings.userContentController.add(TankSaveHandler(tankId: tankId, store: tank), name: "tankSave")
     // The agent has no window to look at, so anything the page reports goes to the log.
     settings.userContentController.addUserScript(
       WKUserScript(
@@ -157,11 +313,57 @@ final class Wallpaper: NSObject, WKNavigationDelegate {
     view.load(URLRequest(url: URL(string: "\(sceneScheme)://\(sceneHost)\(scenePage)")!))
   }
 
-  func close() {
+  /// Pulls the page's current population and writes it, then calls `done` exactly once. Used
+  /// before any teardown — closing, a screen rebuild or quit — so the last seconds of age are
+  /// never lost to a page that a rate-down stop message did not get to flush. The write is
+  /// bounded: if the view is hung or already terminated and never answers within half a
+  /// second, we give up rather than block a rebuild or a quit forever (the periodic and
+  /// lifecycle saves have already captured the population; this flush is a best-effort final
+  /// write). It never adds a polling loop.
+  ///
+  /// Two teardown races are closed here. (1) The save and the completion sit behind the same
+  /// one-shot `Finish` claim: whichever of the WebKit callback or the half-second timeout
+  /// fires first wins, and a *late* callback after a timeout can no longer save this view's
+  /// stale snapshot over a newer tank that a rebuild opened in its place. (2) The page is
+  /// stopped and snapshotted in the SAME evaluateJavaScript string — `habitatRate(0)` then
+  /// `habitatSnapshot()` — so a teardown cannot interleave a rate-down with a snapshot; and
+  /// this view's host `rate` is forced to zero first (no separate evaluate needed) so no
+  /// later applyRate can resume a closing view mid-flush.
+  func flushSnapshot(then done: @escaping () -> Void) {
+    rate = 0            // host property only: applyRate must not resume a closing view
+    inside = false
+    guard loaded else { done(); return }
+    let finish = Finish { done() }
+    view.evaluateJavaScript(
+      "typeof habitatRate === 'function' && habitatRate(0);\n"
+        + "typeof habitatSnapshot === 'function' ? habitatSnapshot() : null;"
+    ) { value, _ in
+      // The timeout may have already claimed completion; a late callback must save nothing.
+      guard !finish.isClaimed else { return }
+      if let text = value as? String { TankStore.shared.save(self.tankId, text) }
+      finish.call()
+    }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { finish.call() }
+  }
+
+  /// Tear the window down. First flush this screen's latest population to disk, then
+  /// release the view. The tankSave message handler is removed here so a stale save already
+  /// queued by this page can never be delivered to the Swift side after teardown to
+  /// overwrite a newer tank that a rebuild opened in its place. `done` fires once the
+  /// snapshot is flushed and the teardown is complete — used to serialize a screen rebuild.
+  func close(then done: @escaping () -> Void = {}) {
+    flushSnapshot { [self] in
+      self.teardown()
+      done()
+    }
+  }
+
+  private func teardown() {
     NotificationCenter.default.removeObserver(self)
     view.navigationDelegate = nil
-    view.configuration.userContentController.removeAllUserScripts()
+    view.configuration.userContentController.removeScriptMessageHandler(forName: "tankSave")
     view.configuration.userContentController.removeScriptMessageHandler(forName: "report")
+    view.configuration.userContentController.removeAllUserScripts()
     view.removeFromSuperview()
     window.contentView = nil
     window.orderOut(nil)
@@ -274,6 +476,15 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
   private var root = Bundle.main.resourceURL!.appendingPathComponent("scene")
   private var awake = true
   private var layout: [CGRect] = []
+  // The persistent physical identity of each screen, kept alongside its frame so a rebuild
+  // is detected even when a panel is replaced in place at the very same frame.
+  private var layoutIds: [String] = []
+  // Serial rebuild/termination state: rebuilding, coalesced rebuildRequested and terminating
+  // (see Lifecycle.swift). Screens are only ever created when it is not terminating.
+  private let lifecycle = LifecycleCoordinator()
+  // Screens still closing in the current transition, held strongly so a bounded async flush
+  // never deallocates a view mid-save; cleared when the transition completes.
+  private var closing: [Wallpaper] = []
   private var lastPoint = NSPoint(x: -1e4, y: -1e4)
   private var snapshots: DispatchSourceSignal?
   private var status: NSStatusItem?
@@ -376,15 +587,74 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
   // Putting a full-screen window on a screen is itself a screen-parameter change, so the
   // arrangement is compared before anything is rebuilt.
   @objc private func screensChanged() {
-    guard NSScreen.screens.map(\.frame) != layout else { return }
-    build()
+    // Two signals decide whether to rebuild: the frame layout (a move, resize or add/remove
+    // of a screen) and the persistent physical identity of each display (a panel replaced
+    // in place can keep the very same frame, so matching on CGRect alone would miss the
+    // swap and never rebuild). Comparing the UUIDs catches a replacement at the same frame.
+    let frames = NSScreen.screens.map(\.frame)
+    let ids = NSScreen.screens.map { TankStore.shared.identity(for: $0) }
+    guard frames != layout || ids != layoutIds else { return }
+    drive(lifecycle.screenChanged())
   }
 
+  /// Initial launch: create every screen's window before any notification could rebuild.
   private func build() {
     layout = NSScreen.screens.map(\.frame)
-    for screen in screens { screen.close() }
+    layoutIds = NSScreen.screens.map { TankStore.shared.identity(for: $0) }
     screens = NSScreen.screens.map { Wallpaper(screen: $0, root: root) }
     applyRate()
+  }
+
+  /// Apply one decision of the lifecycle state machine to the real world. Only this
+  /// method is allowed to create screens (recreateScreens) or reply to AppKit; every path
+  /// through the state machine funnels here, so the two can never be double-fired.
+  private func drive(_ outcome: LifecycleOutcome) {
+    switch outcome {
+    case .none: break
+    case .beginRebuild: startRebuild()
+    case .rebuildClosingDone: recreateScreens()
+    case .beginTermination: finishTermination()
+    case .terminationDone: NSApp.reply(toApplicationShouldTerminate: true)
+    }
+  }
+
+  /// One serialized rebuild. Every live screen moves into the closing list first so
+  /// applyRate — which iterates `screens` — can never re-hasten a view that is going away;
+  /// they are then closed one at a time, each bounded by its own flush. When the last flush
+  /// lands, the state machine says whether to recreate from the latest snapshot, loop for a
+  /// change that was coalesced mid-rebuild, or bail into termination (a quit that arrived
+  /// while we were mid-flush).
+  private func startRebuild() {
+    layout = NSScreen.screens.map(\.frame)
+    layoutIds = NSScreen.screens.map { TankStore.shared.identity(for: $0) }
+    let closingNow = screens
+    screens = []
+    closing = closingNow       // hold the closing views strongly until every flush lands
+    closeAll(closingNow) { [weak self] in
+      guard let self else { return }
+      self.closing = []
+      self.drive(self.lifecycle.rebuildFinishedClosing())
+    }
+  }
+
+  /// The rebuild's close phase is done and no termination interrupted it: make the windows
+  /// from the *latest* screen snapshot (a panel could have been swapped mid-flush) and drop
+  /// right back into ordinary power/rate behavior. Never runs once termination has begun.
+  private func recreateScreens() {
+    guard !lifecycle.terminating else { return }
+    screens = NSScreen.screens.map { Wallpaper(screen: $0, root: root) }
+    applyRate()
+  }
+
+  /// Closes screens one at a time, waiting for each snapshot flush to land before the next.
+  private func closeAll(_ list: [Wallpaper], then done: @escaping () -> Void) {
+    var remaining = list
+    func step() {
+      guard let head = remaining.first else { done(); return }
+      remaining.removeFirst()
+      head.close { step() }
+    }
+    step()
   }
 
   private var onBattery: Bool {
@@ -556,8 +826,50 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
     applyRate()
   }
 
+  /// Quitting goes through NSApp.terminate, which reaches applicationShouldTerminate below
+  /// and flushes every tank's latest population before the process exits.
   @objc private func quit() {
     NSApp.terminate(nil)
+  }
+
+  // MARK: - Flushing every tank on the way out
+
+  /// AppKit asks before terminating; we answer .terminateLater, settle every screen's
+  /// latest population (each bounded by flushSnapshot), then reply true. This is what keeps
+  /// a session that never reaches a pagehide save — a short run, or one closed the menu-bar
+  /// way — from losing its ids and age. If a rebuild is mid-flight we wait for its active
+  /// flush to land and route through the state machine rather than race it; once termination
+  /// begins, no new screens are ever created, and the reply fires exactly once.
+  func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+    drive(lifecycle.terminate())
+    return .terminateLater
+  }
+
+  /// Termination was decided: stop and flush whichever screens remain, serially, then reply
+  /// once. `screens` may already be empty if the quit arrived during a rebuild's close
+  /// phase (those views were flushed by the rebuild); either way they are held strongly as
+  /// `closing` until the last write lands.
+  private func finishTermination() {
+    let remaining = screens
+    screens = []
+    closing = remaining       // keep every view referenced until its flush completes
+    flushAll(remaining) { [weak self] in
+      guard let self else { return }
+      self.closing = []
+      self.drive(self.lifecycle.terminationFinished())
+    }
+  }
+
+  /// Stops and snapshots screens one at a time (each bounded by flushSnapshot). The app is
+  /// exiting, so no window teardown is needed — only the final population write.
+  private func flushAll(_ list: [Wallpaper], then done: @escaping () -> Void) {
+    var remaining = list
+    func step() {
+      guard let head = remaining.first else { done(); return }
+      remaining.removeFirst()
+      head.flushSnapshot { step() }
+    }
+    step()
   }
 
   /// The cursor belongs to the Finder, so its position is read rather than captured.
@@ -574,8 +886,6 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
   }
 }
 
-let application = NSApplication.shared
-let controller = Controller()
-application.setActivationPolicy(.accessory)
-application.delegate = controller
-application.run()
+// The executable bootstrap (NSApplication setup + run loop) lives in main.swift so this
+// file can be compiled together with the AppKit-free Lifecycle.swift helper for typecheck
+// and tests; top-level code is only allowed in the file named main.swift.

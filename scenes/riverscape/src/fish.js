@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { groundHeight, randomGenerator, smoothstep } from "./math.js";
 import { flowDirectionAt, shelteredVelocity, thicketAt } from "./water.js";
 import { bloodfinTetra } from "./fish-species.js";
+import { roundAge, uid, SAVE_VERSION } from "./tank-state.js";
 
 export const COUNT = 24;
 // The whole water column the fish may use. The floor is the sand, tracked separately.
@@ -409,8 +410,21 @@ export function createFishSchool(
     thickets = [],
     food = null,
     species = bloodfinTetra,
+    // A saved population to restore. When it holds exactly COUNT fish the school adopts
+    // each one's stable id, species key and age, while still re-randomising the *mesh*
+    // (positions and poses are render-only and deliberately not replayed). When it is
+    // absent or the wrong size, the school builds a fresh population at age zero.
+    population = null,
   } = {},
 ) {
+  // The renderer owns one shared anatomy and material set for every fish, so the school
+  // renders as the species passed in (the default). The per-fish species keys recorded
+  // on the population are kept and saved back unchanged, ready for a later issue that
+  // gives each species its own body; today all fish are the same species.
+  const liveRecords =
+    Array.isArray(population?.fish) && population.fish.length === COUNT
+      ? population.fish
+      : null;
   const { snoutX, standardLength } = species.measurements;
   const random = randomGenerator(583137);
   const range = (min, max) => min + random() * (max - min);
@@ -471,6 +485,14 @@ export function createFishSchool(
   let escapes = 0;
   const initialPositions = [];
   const fish = Array.from({ length: COUNT }, (_, id) => {
+    // The durable identity comes from the saved population when present, else from a
+    // brand-new unique id. `sid` (saved id) is what gets written back to disk; `id` is
+    // only this tank's live array/instance index and is recomputed on every load, so it
+    // can never be mistaken for a stable identity.
+    const record = liveRecords ? liveRecords[id] : null;
+    const sid = record ? String(record.id) : uid();
+    const speciesKey = record ? String(record.species) : species.key;
+    const baseAge = record ? roundAge(record.age) : 0;
     const band = id % 6;
     const position = new THREE.Vector3();
     do {
@@ -491,6 +513,13 @@ export function createFishSchool(
     ).normalize();
     return {
       id,
+      // Stable identity: `sid` survives a restart and is what saves are keyed on, while
+      // `id` is only the live array index rebuilt on every load.
+      sid,
+      species: speciesKey,
+      // Age in running simulation seconds, seeded from the save and advanced only while
+      // the tank is actually being drawn (dt > 0 below).
+      age: baseAge,
       position,
       heading,
       swim: heading.clone().multiplyScalar(range(0.02, 0.08)),
@@ -1085,6 +1114,13 @@ export function createFishSchool(
   function update(dt, time, pointer) {
     dt = Math.min(Math.max(dt, 0), 0.05);
     elapsed += dt;
+    // Age is running simulation time, so it must advance by exactly the same steps as
+    // the rest of the simulation and never while no frame is being drawn. `dt` is 0
+    // for every paused, hidden, asleep or stopped-render frame, and the frame loop clamps
+    // a long stall rather than letting a wall-clock gap flood in as "age".
+    if (dt > 0) {
+      for (const f of fish) f.age += dt;
+    }
     waterClock = time;
     // A pellet touching the film is the loudest thing that happens in a quiet tank, and
     // the first thing anyone notices: heads turn across the near half of the water before
@@ -1667,6 +1703,19 @@ export function createFishSchool(
   return {
     update,
     fish,
+    // The durable population for this tank, as pure data a host can store: each fish's
+    // stable id, species key and current age. Everything else in `fish` is render state
+    // and never leaves the machine.
+    snapshotPopulation() {
+      return {
+        version: SAVE_VERSION,
+        fish: fish.map((f) => ({
+          id: f.sid,
+          species: f.species,
+          age: f.age,
+        })),
+      };
+    },
     getTelemetry() {
       const states = { hover: 0, travel: 0, settle: 0, inspect: 0, feed: 0, escape: 0 };
       let twitching = 0,

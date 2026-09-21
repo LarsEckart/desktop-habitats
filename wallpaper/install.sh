@@ -17,9 +17,11 @@ fi
 
 build=$(mktemp -d)
 trap 'rm -rf "$build"' EXIT
-# Built for this machine's own architecture; the binary never leaves it.
+# Built for this machine's own architecture; the binary never leaves it. Lifecycle.swift
+# is the AppKit-free helper shared with the Swift test executable; both go into the app.
 swiftc -O -target "$(uname -m)-apple-macos13.0" -o "$build/Desktop Habitats" \
-	"$here/Wallpaper.swift" -framework Cocoa -framework WebKit -framework IOKit
+	"$here/main.swift" "$here/Wallpaper.swift" "$here/Lifecycle.swift" \
+	-framework Cocoa -framework WebKit -framework IOKit
 
 # Replace installations made before the project was renamed.
 launchctl bootout "$domain/com.chaselean.aquatica" 2>/dev/null || true

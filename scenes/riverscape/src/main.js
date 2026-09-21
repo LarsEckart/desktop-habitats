@@ -7,6 +7,8 @@ import { randomGenerator } from "./math.js";
 import { waterTime } from "./water.js";
 import { createFrameLoop } from "./frame-loop.js";
 import { renderSettings, framebufferSize } from "./render-policy.js";
+import { createTankStorage } from "./tank-storage.js";
+import { createPopulation, serialize } from "./tank-state.js";
 
 const canvas = document.querySelector("#scene");
 const habitat = document.querySelector("#habitat");
@@ -27,9 +29,15 @@ let onBattery = false;
 let settings = renderSettings({ profile, wallpaper, pixelRatio: devicePixelRatio });
 let requestedRate = wallpaper ? 0 : 60;
 let loop = null, applyPower = null;
+// Assigned inside start() once the save machinery exists (after the school is built). The
+// host rate-down path needs to flush the population the moment it stops the tank, so the
+// very last age is persisted before a teardown that a pagehide save might never get to run.
+let saveTank = null;
 window.habitatRate = (fps) => {
   requestedRate = Number.isFinite(fps) && fps > 0 ? Math.min(120, fps) : 0;
   loop?.setRate(requestedRate);
+  // Stopping the tank is a lifecycle point: capture the population before any teardown.
+  if (requestedRate === 0) saveTank?.();
 };
 // Geometry never changes on a power transition: no plant popping or regeneration.
 window.habitatPower = (battery) => {
@@ -154,11 +162,18 @@ async function start() {
     ...settings, animatedShadows: profile !== "reference",
   });
   const food = createFood(scene, { thickets: plants.thickets });
+  // The tank's saved population: read once at startup, then owned by the live school
+  // which hands back snapshots of exactly what to keep on disk. A missing, unreadable or
+  // too-new save resolves to null here and a fresh population is built instead, so a bad
+  // file can never stop the aquarium from starting.
+  const tankStore = createTankStorage();
+  const population = tankStore.initial() ?? createPopulation();
   const fish = createFishSchool(scene, {
     obstacles,
     landmarks,
     thickets: plants.thickets,
     food,
+    population,
   });
   const particles = createParticles(scene, { thickets: plants.thickets });
 
@@ -201,7 +216,7 @@ async function start() {
   });
   postScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), post));
 
-  let contextLost = false, zeroSize = false, forceShadows = true;
+  let contextLost = false, zeroSize = false, forceShadows = true, wasZeroSize = false;
   const maxDimension = Math.min(renderer.capabilities.maxTextureSize,
     renderer.getContext().getParameter(renderer.getContext().MAX_RENDERBUFFER_SIZE));
   function visibility() {
@@ -213,6 +228,13 @@ async function start() {
     settings = renderSettings({ profile, wallpaper, pixelRatio: devicePixelRatio, onBattery });
     const dimensions = framebufferSize(bounds.width, bounds.height, settings.resolution, maxDimension);
     zeroSize = !dimensions;
+    // A tank that stops being drawn because it has no size should still persist the latest
+    // population before it goes quiet. This goes through saveTank (null until the save
+    // section initializes) because `resize()` also runs once synchronously at startup, before
+    // `lastSave` is declared — a direct saveNow() there would hit the temporal dead zone on
+    // a machine that opens the page already zero-sized.
+    if (zeroSize && !wasZeroSize) saveTank?.();
+    wasZeroSize = zeroSize;
     visibility();
     if (!dimensions) return;
     const { width, height, scale } = dimensions;
@@ -236,6 +258,8 @@ async function start() {
   canvas.addEventListener("webglcontextlost", (event) => {
     event.preventDefault();
     contextLost = true;
+    // The context is about to be lost; capture the latest population before it is.
+    saveNow();
     visibility();
   });
   canvas.addEventListener("webglcontextrestored", () => {
@@ -323,6 +347,8 @@ async function start() {
       event.preventDefault();
       paused = !paused;
       loop?.setPaused(paused);
+      // Pausing by hand is a lifecycle point, like hosting it: keep the pause's age.
+      if (paused) saveNow();
     }
     if (event.key.toLowerCase() === "f") fullscreen();
   });
@@ -332,6 +358,58 @@ async function start() {
   scene.updateMatrixWorld(true);
   let time = 0, lastShadowTime = -Infinity, renderedFrames = 0, shadowFrames = 0;
   let ready = false;
+  // Save at a sensible cadence, not every frame. Age is the only thing that changes on
+  // disk, and it advances only while the tank is actually being drawn, so a monotonic
+  // wall-clock interval (performance.now(), never a date clock) is the right time base: a
+  // night spent closed never piles up flush work. A save can fail (storage full, host
+  // unreachable) and that must never stop the scene: it is a silent warning and a retry at
+  // the next save point.
+  const SAVE_INTERVAL_MS = 60_000; // tuning: how much running age a crash may lose
+  let lastSave = -Infinity;
+  function persist() {
+    let ok = false;
+    try {
+      ok = tankStore.save(fish.snapshotPopulation());
+    } catch (error) {
+      console.warn("Riverscape: could not save the tank", error);
+      return;
+    }
+    if (!ok) console.warn("Riverscape: tank save was refused");
+  }
+  // A lifecycle save is unconditional: pausing, hiding, losing the context, stopping or
+  // closing the page all want the very latest age on disk, even if it is only seconds past
+  // the last periodic save. This is the path that lets a page which goes quiet (or is torn
+  // down) leave a correct record, and it is deliberately separate from saveIfDue, which
+  // refuses while hidden: a hidden page accumulates no new age per frame, but a hidden
+  // *lifecycle change* still needs its one final snapshot written.
+  function saveNow() {
+    lastSave = performance.now();
+    persist();
+  }
+  // Start with the population on disk so even a session that ends before the first
+  // periodic save (a crash, a short-lived run) still retains its ids, species and age.
+  saveNow();
+  // Bridge for the host (Wallpaper.swift) to pull the very latest snapshot at quit, rebuild
+  // or rate-down, independent of the fire-and-forget message channel used for periodic
+  // saves. It returns the serialized record, or null if the snapshot cannot be built.
+  window.habitatSnapshot = () => {
+    try {
+      return serialize(fish.snapshotPopulation());
+    } catch (error) {
+      console.warn("Riverscape: could not build a snapshot for the host", error);
+      return null;
+    }
+  };
+  saveTank = saveNow;
+  function saveIfDue(now) {
+    // Periodic cadence only runs while the tank is drawn and visible. A hidden page was
+    // saved unconditionally by the lifecycle path when it went hidden and accumulates no
+    // new age while nothing draws, so there is nothing further to save here.
+    if (document.hidden) return;
+    if (now - lastSave < SAVE_INTERVAL_MS) return;
+    lastSave = now;
+    persist();
+  }
   function renderFrame(dt, now) {
     // Short substeps keep feeding/swimming stable at 20/30 fps without slowing the
     // simulation down. Long suspended periods never reach this function as elapsed time.
@@ -361,6 +439,7 @@ async function start() {
     renderer.setRenderTarget(null);
     renderer.render(postScene, postCamera);
     renderedFrames++;
+    saveIfDue(now);
     if (!ready) {
       ready = true;
       loading.style.opacity = 0;
@@ -370,6 +449,19 @@ async function start() {
   loop = createFrameLoop(renderFrame, {
     fps: requestedRate, paused, hidden: document.hidden || zeroSize || contextLost,
   });
+  // Lifecycle saves: capture the population exactly when the tank stops being drawn, so a
+  // hidden tab, a covered/slept screen, a lost GL context or a closing page leaves a
+  // correct record even if the next periodic save never runs. Each of these uses saveNow
+  // (unconditional), the one case the periodic saveIfDue deliberately refuses. Saving on
+  // visibilitychange-hidden, pagehide (which also covers close/refresh), and a
+  // webglcontextlost (before the context reload) covers the ways a running tank can go
+  // quiet without a periodic save in between.
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) saveNow();
+    else lastSave = performance.now(); // eager first periodic save once visible again
+  });
+  window.addEventListener("pagehide", saveNow);
+  canvas.addEventListener("webglcontextlost", saveNow);
   window.habitatStats = () => ({
     profile, onBattery, resolution: settings.resolution,
     framebuffer: [target.width, target.height], samples: target.samples,

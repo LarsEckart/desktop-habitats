@@ -66,4 +66,44 @@ h.loop.setRate(NaN);assert.equal(h.tasks.size,0);
 h.loop.setRate(30);h.advance(100);h.loop.dispose();h.loop.invalidate();assert.equal(h.tasks.size,0);
 const still=harness(0);still.advance(100);assert.equal(still.frames.length,1);assert.equal(still.tasks.size,0);
 const reduced=harness(60,60,true);reduced.advance(1000);assert.equal(reduced.frames.length,1);assert.equal(reduced.tasks.size,0);
-console.log('PASS: render budgets, zero-size/large targets, 20/30/60 fps pacing at 60/120 Hz, stop/resume, reduced motion, hidden invalidation and zero idle callbacks');
+
+// ---- Finding 4: a real stall is a scheduler gap, not a long frame. A blocked main thread,
+// a throttled tab or a sleeping display can leave seconds since the last draw; the loop must
+// deliver dt = 0 for that gap rather than clamp it to 0.1 s (which would burst simulated age
+// and fish forward). Normal 20/30/60 fps intervals — at most 0.05 s — are untouched, as the
+// pacing assertions above already pin down. Drive the loop's parked callback by hand so the
+// wall clock can be leapt by exactly 5 s between two consecutive frames.
+function stallDriver() {
+  const state = { now: 0, callback: null };
+  const frames = [];
+  const loop = createFrameLoop((dt, t) => frames.push({ dt, t }), {
+    fps: 30, clock: () => state.now,
+    requestFrame: (fn) => { state.callback = fn; return 1; },
+    cancelFrame: () => { state.callback = null; },
+    // Run the timer-body immediately: it clears the loop's timer and hands control back to
+    // requestFrame, so the parked slot always holds the real frame closure. This keeps every
+    // fire() a single frame regardless of which scheduling branch the loop chose.
+    delay: (fn) => { fn(); return 1; },
+    cancelDelay: () => { state.callback = null; },
+  });
+  return {
+    loop, frames,
+    fire(t) { state.now = t; state.callback(t); },
+  };
+}
+const stall = stallDriver();
+const periodMS = 1000 / 30; // a 30 fps frame, in milliseconds
+let at = 50; // the loop's clock (and now) is in milliseconds
+for (let i = 0; i < 30; i++) { stall.fire(at); at += periodMS; }
+const typical = stall.frames[stall.frames.length - 1].dt;
+assert.ok(typical > 0 && typical <= 0.05,
+  `a normal 30 fps interval is preserved (dt=${typical})`);
+// Leap 5 real seconds (5000 ms) to the next parked frame: the gap is discarded entirely.
+stall.fire(at + 5000);
+const stalled = stall.frames[stall.frames.length - 1];
+assert.equal(stalled.dt, 0, "a 5 s stall yields dt = 0, never a clamped 0.1 s");
+at += 5000 + periodMS;
+stall.fire(at);
+assert.ok(stall.frames[stall.frames.length - 1].dt > 0, "30 fps resumes normally after a stall");
+stall.loop.dispose();
+console.log('PASS: render budgets, zero-size/large targets, 20/30/60 fps pacing at 60/120 Hz, stop/resume, reduced motion, hidden invalidation, zero idle callbacks and stalled-frame discard');

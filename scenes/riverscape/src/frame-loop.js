@@ -33,8 +33,16 @@ export function createFrameLoop(draw, {
     if (disposed || hidden || (!dirty && !running())) return;
     if (!dirty && now + 0.5 < deadline) { schedule(); return; }
     const active = running();
-    // Discard suspended time; cap a real stall, but not a normal 20/30 fps interval.
-    const dt = active && last !== null ? Math.min(0.1, Math.max(0, (now - last) / 1000)) : 0;
+    // Discard suspended time. A real stall is not a long frame: a throttled tab timer, a
+    // sleeping display or a blocked main thread can leave 5 s since the last draw, and
+    // that gap must not be fed to the scene (it would burst simulated age and fish
+    // forward). 0.1 s is well above the slowest normal cadence (20 fps = 0.05 s), so any
+    // elapsed beyond it is dropped entirely as dt = 0 rather than clamped to a fake step.
+    // This leaves the ordinary 20/30/60 fps intervals, including a few ms of jitter,
+    // exactly as they were.
+    const elapsed = Math.max(0, (now - last) / 1000);
+    const dt =
+      active && last !== null && elapsed <= 0.1 ? elapsed : 0;
     last = active ? now : null;
     dirty = false;
     draw(dt, now);
