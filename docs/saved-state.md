@@ -5,7 +5,8 @@ behind it.
 
 ## The saved record
 
-A save keeps only each fish's durable identity — nothing about swimming. Per fish:
+A save keeps only each fish's durable identity and growth/breeding state — nothing about
+swimming. Per fish:
 
 - **id** — an opaque, unique string (`fmuavn2jp-1-go6zqu`). Never an array index, because
   later issues remove fish and an index would change meaning while a saved fish still
@@ -14,37 +15,88 @@ A save keeps only each fish's durable identity — nothing about swimming. Per f
   renaming a label can never re-home somebody's fish.
 - **age** — seconds of *running simulation time* since birth. It advances only while the
   tank actually draws, rounded to the millisecond on the way onto disk so float drift never
-  accumulates.
+  accumulates. A baby's growth is derived from this age; levels of maturity are mostly
+  there to say when a baby is big enough to breed.
+- **breedIn** — the adult's remaining breeding cooldown in running seconds (0 = ready). A
+  *remainder*, not a wall-clock timestamp, so a restart continues it instead of re-firing
+  the same birth.
+- **adult** — `true` for a fish born full-grown (every fish from a v1 save, or a fresh
+  tank), `false` for a baby born to grow. It is what keeps a migrated tank adult-sized
+  even when its saved running age is tiny, and makes a baby visibly distinct from day one.
+
+The whole tank also carries `breedIn`, the tank-level birth cooldown (one birth per
+cooldown, never more than the population cap of 24).
 
 Everything else — position, pose, the pellet being chased — is rebuilt fresh on load. The
 school in `fish.js` adopts a saved population and `snapshotPopulation()` hands the durable
-record back. `tank-state.js` owns the format; `tank-storage.js` owns where the bytes go.
+record back plus the tank cooldown. `tank-state.js` owns the format; `tank-storage.js`
+owns where the bytes go; `breeding.js` owns the growth and birth rules (constants and the
+pure `breedMany` step).
 
 ## Validation safeguards
 
-Each save carries `version` (now `1`). A reader refuses a version **higher** than it knows
+Each save carries `version` (now `2`). A reader refuses a version **higher** than it knows
 and starts a fresh tank rather than guess. It also refuses malformed records: a non-object,
 a population that is not an array, missing fields, duplicate or blank ids, an unknown
-species, or an invalid age. Bounds guard the extremes: `MAX_SAVED_FISH` (128) caps the
-population, and `MAX_AGE_SECONDS` (~10 years) caps age so a corrupt `1e308` can never
-overflow to Infinity. Parsing and validation are coercion-free and never throw — a hostile
-object id, for example, is refused by type check rather than `String`-coerced. Extra fields
-on a record are accepted and discarded, so a newer version degrades gracefully.
+species, an invalid age, a non-numeric cooldown, or a non-boolean adult flag. Bounds guard
+the extremes: the practical ceiling for a restored/rendered tank is `CAPACITY` — the
+larger of `LEGACY_V1_COUNT` (24, the always-exact v1 size) and `POPULATION_CAP` (the live
+birth ceiling) — with `MAX_SAVED_FISH` (128) as a redundant belt-and-braces guard, and
+`MAX_AGE_SECONDS` (~10 years) caps age so a corrupt `1e308` can never overflow to
+Infinity. Parsing and validation are coercion-free and never throw — a hostile object id,
+for example, is refused by type check rather than `String`-coerced. Extra fields on a
+record are accepted and discarded, so a newer version degrades gracefully.
 
-## Version migration (next feature)
+Why two ceilings? The live birth machinery (`breedMany`) only ever grows a tank toward
+`POPULATION_CAP`. But restore/render must be able to hold the legacy v1 population too, so
+if a future tuning ever lowers `POPULATION_CAP` below the always-24 v1 count, an existing
+migrated 24-fish save is still accepted by the reader (`CAPACITY` spans it) and still fits
+the render buffers (`fish.js` sizes them to the same `CAPACITY`). A migrated tank that
+sits above a lowered live cap simply has no room to breed and holds steady — never a
+silver loss.
 
-v1 requires **exactly `DEFAULT_COUNT` (24) fish**. Variable restored counts — births — are
-deliberately out of scope for v1 and deferred to a version migration. The next feature that
-allows more (or fewer) restored fish **must** bump `SAVE_VERSION` to `2` **and** keep the
-reader able to accept v1: it must still parse v1 records and preserve each fish's saved
-**id** and **age**. Bump `SAVE_VERSION` in `tank-state.js` whenever the *meaning* of a
-saved record changes (not just the count check).
+## Version migration (this feature)
+
+v2 allowed variable restored counts (births) and the growth/breeding fields, and the
+reader accepts **both** v1 and v2. A v1 save — which always carried the old fixed
+population of exactly 24 fish with only id/species/age — is migrated in `validate()`:
+
+- every fish's saved **id**, **species**, **age** and the **count** are preserved exactly;
+- the breeding fields are filled with the safe defaults (`breedIn: 0` per fish, tank
+  `breedIn: 0`);
+- every migrated fish is marked **adult**, so an existing tank keeps its fish adult-sized
+  and breeding-ready rather than shrinking them into fry because their pre-growth running
+  age happened to be small.
+
+Because 24 is exactly the capacity floor, a migrated tank renders at the full 24 and its
+birth machinery stays idle (births cap at `POPULATION_CAP`, so an update never surprises
+an existing aquarium with babies). If a future tuning ever lowers `POPULATION_CAP` below
+24, the renderer still keeps room for all 24 (`CAPACITY`) and the tank simply holds steady.
+
+Tuning for the v2 growth/breeding model (all constants in `breeding.js`, easy to retune):
+
+- `FRESH_COUNT` **8** — a brand-new tank starts with 8 adult fish, fewer than the old 24;
+  existing saves keep whatever they had.
+- `POPULATION_CAP` **24** — the *birth* ceiling: how many fish the breeding machinery may
+grow a tank to, and how crowded it may ever be. Restore/render uses `CAPACITY = max(24,
+POPULATION_CAP)`, described above.
+- `MATURITY_AGE` / `GROWTH_SECONDS` **5400 s** (90 min of running time) — a baby grows
+  from 40% of adult size to full size, and becomes breeding-eligible.
+- `PER_FISH_BREED_COOLDOWN` **5400 s** — an adult rests before breeding again.
+- `TANK_BREED_COOLDOWN` **600 s** (10 min) — at most one birth per 10 minutes of running
+  time, whichever adult is ready, which is what makes births feel like occasional
+  discoveries rather than a spawning burst, and guarantees the cap is never exceeded.
+
+Growth, ages and cooldowns advance **only while the simulation runs** (`dt > 0`); there is
+deliberately **no offline or catch-up** for time spent paused, hidden, asleep, or with
+rendering stopped. Babies are born where their parent is, swim with size-aware spacing,
+and their feeding reach and obstacle clearance scale to their small body.
 
 ## Where a tank lives on each host
 
 | Host | Storage | Notes |
 | --- | --- | --- |
-| Browser preview | `localStorage["desktop-habitats/tank:v1"]` | per browser *origin* |
+| Browser preview | `localStorage["desktop-habitats/tank:v1"]` (key kept from v1 so a v1 save is found and migrated) | per browser *origin* |
 | Mac wallpaper | `~/Library/Application Support/Desktop Habitats/tanks/<id>.json`, plus `displays.json` mapping displays to tank ids | outside the app bundle |
 
 The Mac app bundle is rebuilt **from scratch** on every install, so the population lives
@@ -112,12 +164,25 @@ fails.
 Automated, in CI-style `npm test`:
 
 - `tests/tank-state.mjs` — format round trips; strict coercion-free validation; the
-  exact-24 v1 count rule and the `MAX_SAVED_FISH` cap; `roundAge` never returning Infinity;
-  unsafe `parse` returning null.
-- `tests/tank-save.mjs` — a saved population restores stable ids/species/ages; age
-  advances only while `dt > 0`; a live snapshot round-trips through both adapters (browser
-  `localStorage` and a fake WebKit host bridge) with read/write failures resolving to a
-  fresh tank or a refused save rather than crashing, each host id isolated.
+  v1→v2 migration (ids/ages/count preserved, breeding defaults, adult flag); the
+  `CAPACITY` (restore/render) and `MAX_SAVED_FISH` caps — including the fail-safe that a
+  migrated 24-fish tank serializes and stays steady even under a simulated lowered birth
+  cap; the fresh smaller population; `roundAge` never returning Infinity; unsafe `parse`
+  returning null.
+- `tests/breeding.mjs` — the pure growth curve; mature-only breeding (a baby must grow
+  before it can breed); per-fish and tank cooldowns on a controlled clock with `dt === 0`
+  changing nothing; cooldown *remainders* surviving a reload without a duplicate birth;
+  and a hard-population-cap simulation where many ready adults still never exceed 24.
+- `tests/tank-save.mjs` — a saved population (any count up to the cap) restores stable
+  ids/species/ages and breeding state; age advances only while `dt > 0`; a live snapshot
+  round-trips through both adapters (browser `localStorage` and a fake WebKit host bridge)
+  with read/write failures resolving to a fresh tank or a refused save rather than
+  crashing, each host id isolated; a fresh tank starts at the smaller population; a v1
+  file migrates through the live school into a v2 save; a birth grows the live tank and
+  the baby survives a save/restore.
+- `tests/fish-behavior.mjs` — (plus the issue-02 section) a capped tank mixing adults and
+  fry stays inside the tank, finite, feeding and avoid-collision, and the renderer draws
+  exactly as many instances as fish exist.
 - `tests/render-policy.mjs` — the stall rule: a 5 s scheduler gap delivers `dt = 0` while
   normal pacing is preserved.
 - `wallpaper/tests/main.swift` (via `wallpaper/tests/run.sh`) — the AppKit-free lifecycle
@@ -127,12 +192,27 @@ Automated, in CI-style `npm test`:
 - `npm run check` — every `src` file parses; the Swift typecheck (`wallpaper/tests/check.sh`)
   runs on macOS and is likewise gated off Mac.
 
-Actually exercised (real browser, parent's check):
+Actually exercised in a real browser (this issue's check):
 
-- Rate-0 (`habitatRate(0)`) flushes a full snapshot; a stopped tank advances no age with no
-  pending callbacks; a reload `?still=1` restored **exact 24 records**.
+- A fresh preview starts at **8** fish. A seeded v2 tank with 8 adults and 16 fish at
+  different growth ages draws **24** fish in both preview and `wallpaper.html` in
+  headless Chrome. Screenshots show clearly smaller fry and no obvious crowding in
+  this starting layout. This is a browser check, not native WebKit or a long swim trial.
+- The existing `habitatBenchmark` readback check ran 12 frames after 3 warmup frames:
+  preview at 1600×834 averaged 48 draw calls and 1363 ms service time; wallpaper HTML
+  at 1600×891 averaged 58 draw calls and 1528 ms. Chrome used **SwiftShader software
+  rendering**, so these slow timings do not establish a hardware frame budget or FPS.
+  Real GPU/native wallpaper performance remains unchecked. Birth timing, migration,
+  actual fry bites, and pair spacing are covered by deterministic tests, not inferred
+  from these screenshots.
 
 Only manual (Mac wallpaper integration, **not** yet run):
+
+- Visual crowding/frame-cost review of a full 24-fish tank on real hardware in both
+  preview (all display modes) and the native wallpaper, including a tank that has grown
+  from 8 to 24 through actual births over hours of running time.
+- The tuned timing feel: births at ~10 min spacing, fry visible for ~90 min of running
+  time, first birth in a fresh tank after 10 running minutes.
 
 - Reconnecting a display to its own tank after a replug/rebuild; two displays keeping
   separate tanks.
@@ -145,7 +225,9 @@ app.
 
 ## Files
 
-- `src/tank-state.js` — format: create, validate, parse, serialize; v1/version rules.
+- `src/breeding.js` — growth and breeding rules: tuning constants, `growthOf`/`sizeScale`,
+  and the pure `breedMany` simulation step.
+- `src/tank-state.js` — format: create, validate, parse, serialize; v1→v2 migration rules.
 - `src/tank-storage.js` — host adapters: browser localStorage, host bridge.
 - `src/fish.js` — adopts a population; tracks age; `snapshotPopulation()`.
 - `src/main.js` — loads a population; initial/periodic/lifecycle saves; `habitatSnapshot`.

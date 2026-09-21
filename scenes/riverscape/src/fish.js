@@ -2,9 +2,15 @@ import * as THREE from "three";
 import { groundHeight, randomGenerator, smoothstep } from "./math.js";
 import { flowDirectionAt, shelteredVelocity, thicketAt } from "./water.js";
 import { bloodfinTetra } from "./fish-species.js";
-import { roundAge, uid, SAVE_VERSION } from "./tank-state.js";
+import { roundAge, uid, SAVE_VERSION, FRESH_COUNT, CAPACITY } from "./tank-state.js";
+import { sizeScale, MATURITY_AGE, breedMany, TANK_BREED_COOLDOWN } from "./breeding.js";
 
-export const COUNT = 24;
+// The capacity of this school's render buffers: how many fish it can draw. It is the
+// restore/render capacity (the larger of LEGACY_V1_COUNT and POPULATION_CAP), so a
+// migrated v1 tank's 24 fish always render even if a future tuning lowers the live birth
+// cap below 24. Births (breeding.js) still stop at POPULATION_CAP; this COUNT only sizes
+// the render room, and live tanks start at FRESH_COUNT and grow toward POPULATION_CAP.
+export const COUNT = CAPACITY;
 // The whole water column the fish may use. The floor is the sand, tracked separately.
 export const BOUNDS = {
   minX: -8.3,
@@ -17,6 +23,14 @@ export const BOUNDS = {
 // Open-water routes include the space above and alongside the planting.
 const OPEN = { minX: -7.5, maxX: 7.5, minY: 1.8, maxY: 7.4, minZ: -1.4, maxZ: 2.8 };
 const GROUND_CLEARANCE = 0.55;
+// How far from a wall or the ceiling a fish is bound to keep, measured in its own body
+// (units times growth): an adult always stays this far off a wall and the ceiling, and a
+// fry only a proportional fraction of it. It is the unbreakable room the final position
+// clamp enforces; the soft `avoid` terms normally hold a fish further still, and this is
+// the hard safety net an escape or a fast turn cannot punch through. It is kept small
+// enough that a fish can still climb under the surface film to feed, where BOUNDS.maxY
+// is very near the water's surface.
+const WALL_MARGIN = 0.4;
 const MAX_EXPLORERS = 7;
 const UP = new THREE.Vector3(0, 1, 0);
 const FORWARD = new THREE.Vector3(1, 0, 0);
@@ -371,13 +385,19 @@ function applySwimming(material, species) {
     `riverscape-fish-${species?.shaderKey ?? "depth"}-4`;
 }
 
-function clampToBox(position, box, margin = 0) {
-  position.x = THREE.MathUtils.clamp(position.x, box.minX + margin, box.maxX - margin);
-  position.y = THREE.MathUtils.clamp(position.y, box.minY + margin, box.maxY - margin);
-  position.z = THREE.MathUtils.clamp(position.z, box.minZ + margin, box.maxZ - margin);
+// Keep a point inside the tank. `margin` is a base buffer from every wall and from the
+// sand, and `growth` scales that buffer (and the floor clearance) by the fish's own size:
+// an adult keeps the full room the fixed numbers were tuned for, while a fry is allowed
+// proportionally closer to the glass and the sand because it is smaller. With `growth` at
+// its adult value of 1 this is exactly the previous fixed behavior.
+function clampToBox(position, box, margin = 0, growth = 1) {
+  const room = margin * growth;
+  position.x = THREE.MathUtils.clamp(position.x, box.minX + room, box.maxX - room);
+  position.y = THREE.MathUtils.clamp(position.y, box.minY + room, box.maxY - room);
+  position.z = THREE.MathUtils.clamp(position.z, box.minZ + room, box.maxZ - room);
   position.y = Math.max(
     position.y,
-    groundHeight(position.x, position.z) + GROUND_CLEARANCE + margin,
+    groundHeight(position.x, position.z) + GROUND_CLEARANCE * growth + room,
   );
   return position;
 }
@@ -410,23 +430,62 @@ export function createFishSchool(
     thickets = [],
     food = null,
     species = bloodfinTetra,
-    // A saved population to restore. When it holds exactly COUNT fish the school adopts
-    // each one's stable id, species key and age, while still re-randomising the *mesh*
-    // (positions and poses are render-only and deliberately not replayed). When it is
-    // absent or the wrong size, the school builds a fresh population at age zero.
+    // A populated population to restore. Each record carries a stable id, species key,
+    // running age and a breeding cooldown; a baby's mesh (position, pose) is still
+    // re-randomised, since positions are render-only and deliberately not replayed. When
+    // a population is absent or unusable, the school builds a fresh smaller population of
+    // adults (see FRESH_COUNT). The population may hold any number of fish up to the cap.
     population = null,
+    // The school's own random source, defaulting to a deterministic seeded generator so
+    // the same build of the feature reproduces the same swimming run. A test may hand a
+    // seeded source here to drive the randomness that exists (turning, targets, feeding
+    // odds) under a controlled seed; the caller owns the source's lifetime, and the same
+    // generator instance should not be shared across schools if independence matters.
+    random = randomGenerator(583137),
   } = {},
 ) {
   // The renderer owns one shared anatomy and material set for every fish, so the school
   // renders as the species passed in (the default). The per-fish species keys recorded
   // on the population are kept and saved back unchanged, ready for a later issue that
   // gives each species its own body; today all fish are the same species.
-  const liveRecords =
-    Array.isArray(population?.fish) && population.fish.length === COUNT
-      ? population.fish
-      : null;
+  //
+  // `state` is the durable record the simulation runs on (the authoritative copy of ids,
+  // ages, species and cooldowns). Live fish mirror it by array index, so growth and
+  // breeding decisions have exactly one home — breeding.js — and a save is always the
+  // true record, never a hand-built duplicate.
+  const adopted = Array.isArray(population?.fish) && population.fish.length > 0;
+  const state = { breedIn: 0, fish: [] };
+  if (adopted) {
+    state.breedIn = Math.max(0, Number(population.breedIn) || 0);
+    for (const record of population.fish) {
+      state.fish.push({
+        id: String(record.id),
+        species: String(record.species),
+        age: roundAge(record.age),
+        breedIn: Math.max(0, Number(record.breedIn) || 0),
+        // Everything adopted without an explicit flag is a full-grown fish (v1 saves and
+        // past tanks were born adult; only a fresh baby carries adult: false).
+        adult: record.adult !== false,
+      });
+    }
+  } else {
+    // A fresh smaller tank: adult fish (so they read as full-size from the start) whose
+    // tank-level cooldown is armed so the first birth is a discovery some minutes in.
+    state.breedIn = TANK_BREED_COOLDOWN;
+    for (let i = 0; i < FRESH_COUNT; i++) {
+      state.fish.push({
+        id: uid(),
+        species: species.key,
+        age: MATURITY_AGE,
+        breedIn: 0,
+        adult: true,
+      });
+    }
+  }
   const { snoutX, standardLength } = species.measurements;
-  const random = randomGenerator(583137);
+  // The school's random source: the seeded `random` parameter (defaults to the deterministic
+  // 583137 generator), driving every stochastic choice in this tank -- turning, targets,
+  // feeding odds. A caller-supplied seeded source makes a run reproducible for tests.
   const range = (min, max) => min + random() * (max - min);
   const exponential = (mean) => -mean * Math.log(1 - random());
   const geometry = species.createAnatomy();
@@ -484,27 +543,30 @@ export function createFishSchool(
   let startled = 0;
   let escapes = 0;
   const initialPositions = [];
-  const fish = Array.from({ length: COUNT }, (_, id) => {
-    // The durable identity comes from the saved population when present, else from a
-    // brand-new unique id. `sid` (saved id) is what gets written back to disk; `id` is
-    // only this tank's live array/instance index and is recomputed on every load, so it
-    // can never be mistaken for a stable identity.
-    const record = liveRecords ? liveRecords[id] : null;
-    const sid = record ? String(record.id) : uid();
-    const speciesKey = record ? String(record.species) : species.key;
-    const baseAge = record ? roundAge(record.age) : 0;
-    const band = id % 6;
-    const position = new THREE.Vector3();
-    do {
-      position.set(
-        -5.7 + band * 2.18 + range(-0.45, 0.45),
-        range(2.55, 5.75),
-        range(0.42, 2.7),
-      );
-    } while (
-      initialPositions.some((other) => other.distanceToSquared(position) < 0.55)
+  // Build one live, renderable fish from its durable record. `id` is the live array/
+  // instance index, recomputed on every load and never mistaken for the stable `sid`.
+  // `offset` seeds the staring layout band; a newborn fish is given an explicit rearing
+  // `position` near its parent instead, so it appears where it was born.
+  function makeLive(id, record, offset = id, at = null) {
+    const sid = record.id;
+    const speciesKey = record.species;
+    const baseAge = record.age;
+    const position = (
+      at || new THREE.Vector3()
     );
-    initialPositions.push(position);
+    if (!at) {
+      const band = offset % 6;
+      do {
+        position.set(
+          -5.7 + band * 2.18 + range(-0.45, 0.45),
+          range(2.55, 5.75),
+          range(0.42, 2.7),
+        );
+      } while (
+        initialPositions.some((other) => other.distanceToSquared(position) < 0.55)
+      );
+      initialPositions.push(position);
+    }
     // Most of the shoal already faces into the filter return.
     const heading = new THREE.Vector3(
       random() < 0.72 ? -1 : 1,
@@ -573,8 +635,18 @@ export function createFishSchool(
       splashSlot: 0,
       recruiter: null,
       recruitAt: 0,
+      // Mirrored from `state.fish[id]` each step: the adult's remaining breeding
+      // cooldown. Babies keep 0 until mature, and maturity is handled by age.
+      breedIn: record.breedIn,
+      // Born-full-grown flag from the durable record (older saves and fresh tanks are
+      // adult; only babies carry false).
+      adult: record.adult === true,
     };
-  });
+  }
+  const fish = state.fish.map((record, id) => makeLive(id, record));
+  // Only the live count is drawn; the buffers keep room up to the cap.
+  bodies.count = fish.length;
+  membranes.count = fish.length;
   const delta = new THREE.Vector3();
   const target = new THREE.Vector3();
   const desired = new THREE.Vector3();
@@ -744,7 +816,7 @@ export function createFishSchool(
         .copy(f.position)
         .addScaledVector(urge, range(2, 3.5) / urge.length());
     else destination(f, target);
-    clampToBox(target, BOUNDS, 0.45);
+    clampToBox(target, BOUNDS, 0.45, sizeScale(f.age, f.adult));
     travel(f, target, Boolean(leader));
   }
 
@@ -858,7 +930,11 @@ export function createFishSchool(
     }
     // Another fish's jaws may have been a frame ahead of these.
     if (!food.take(pellet)) return;
+    // Counted both globally (for the whole-tank telemetry) and per fish, on the actual
+    // successful eaten path. The per-fish count is how a test proves a particular fry —
+    // not just the aggregate — really got food down.
     bites++;
+    f.bites = (f.bites || 0) + 1;
     rouse(f, FEED.eatDrive);
     f.appetite = Math.max(APPETITE.floor, f.appetite - APPETITE.cost);
     f.food = null;
@@ -911,7 +987,7 @@ export function createFishSchool(
         if (f.mode === "hover" || f.mode === "settle") {
           scan.copy(downstream).multiplyScalar(-range(2, 3.5));
           rotateAboutY(scan, range(-0.7, 0.7)).add(f.position);
-          travel(f, clampToBox(scan, BOUNDS, 0.45), true);
+          travel(f, clampToBox(scan, BOUNDS, 0.45, sizeScale(f.age, f.adult)), true);
         }
         break;
       }
@@ -931,7 +1007,7 @@ export function createFishSchool(
             range(-FOOD_CONTAGION.spread, FOOD_CONTAGION.spread) * 0.5,
             range(-FOOD_CONTAGION.spread, FOOD_CONTAGION.spread),
           );
-          travel(f, clampToBox(scan.add(leader.position), BOUNDS, 0.45), true);
+          travel(f, clampToBox(scan.add(leader.position), BOUNDS, 0.45, sizeScale(f.age, f.adult)), true);
         }
       }
     } else if (
@@ -1084,7 +1160,7 @@ export function createFishSchool(
       urge.addScaledVector(target, (-(zone - d) / zone) * SWIM.cruise * 0.9);
       if (f.mode === "hover") {
         f.anchor.addScaledVector(target, -(zone - d) * THREAT.giveWay * dt);
-        clampToBox(f.anchor, BOUNDS, 0.5);
+        clampToBox(f.anchor, BOUNDS, 0.5, sizeScale(f.age, f.adult));
       }
     }
   }
@@ -1111,15 +1187,37 @@ export function createFishSchool(
     }
   }
 
+  // Materialize a newborn fish into the live school, next to its parent, so a baby
+  // literally appears where it was born rather than teleported in from nowhere.
+  function spawnBirth(child, parent) {
+    const rearing = parent.position
+      .clone()
+      .add(new THREE.Vector3(range(-0.4, 0.4), range(-0.2, 0.4), range(-0.3, 0.3)));
+    clampToBox(rearing, BOUNDS, 0.35, sizeScale(child.age, child.adult));
+    const live = makeLive(fish.length, child, fish.length, rearing);
+    fish.push(live);
+    initialPositions.push(live.position);
+    bodies.count = fish.length;
+    membranes.count = fish.length;
+  }
+
   function update(dt, time, pointer) {
     dt = Math.min(Math.max(dt, 0), 0.05);
     elapsed += dt;
-    // Age is running simulation time, so it must advance by exactly the same steps as
-    // the rest of the simulation and never while no frame is being drawn. `dt` is 0
-    // for every paused, hidden, asleep or stopped-render frame, and the frame loop clamps
-    // a long stall rather than letting a wall-clock gap flood in as "age".
+    // Age and breeding run on the simulation step only, never while no frame is being
+    // drawn. `dt` is 0 for every paused, hidden, asleep or stopped-render frame, and the
+    // frame loop clamps a long stall rather than letting a wall-clock gap flood in as
+    // "age". breeding.js advances a baby's age, its parent's cooldown and the tank's
+    // cooldown by exactly this step, and returns a birth whenever one is due. Live fish
+    // mirror the authoritative record afterwards, so a save and a visual always agree.
     if (dt > 0) {
-      for (const f of fish) f.age += dt;
+      const result = breedMany(state, dt, { id: uid });
+      for (let i = 0; i < fish.length; i++) {
+        fish[i].age = state.fish[i].age;
+        fish[i].breedIn = state.fish[i].breedIn;
+        fish[i].adult = state.fish[i].adult === true;
+      }
+      if (result.born) spawnBirth(result.child, fish[state.fish.indexOf(result.parent)]);
     }
     waterClock = time;
     // A pellet touching the film is the loudest thing that happens in a quiet tank, and
@@ -1154,6 +1252,12 @@ export function createFishSchool(
       }
     for (const f of fish) {
       const { position, swim, heading } = f;
+      // How big this fish is right now, as a fraction of adult size. `f.scale` is the
+      // individual adult proportion the fish was born with; `f.size` folds in the growth
+      // a baby has done so far (a fish that is adult by birth stays 1), so a fry is
+      // genuinely a smaller shape whose spacing, movement room and feeding reach all
+      // scale to it, swelling smoothly over time.
+      const size = f.scale * sizeScale(f.age, f.adult);
       shelteredVelocity(position, time, water, thickets);
       const bed = thicketAt(thickets, position);
       if (f.pendingEscape && elapsed >= f.pendingEscape.at) {
@@ -1204,14 +1308,23 @@ export function createFishSchool(
         );
         closestApproach.copy(delta).addScaledVector(relativeVelocity, approachTime);
         const clearance = Math.min(d, closestApproach.length());
-        if (clearance < SHOAL.spacing) {
+        // A fish makes room to a distance measured in both bodies together: a pair keeps
+        // a gap that scales with how big the two of them are, not just this one. Two
+        // adults keep the tuned spacing (both growth ratios are 1, so nothing changes for
+        // a settled shoal); a fry and an adult ask for less, two fry for less still, and
+        // the gap is symmetric whichever fish is the reference.
+        const pair =
+          (sizeScale(f.age, f.adult) + sizeScale(other.age, other.adult)) / 2;
+        const spacing = SHOAL.spacing * pair;
+        const crowding = SHOAL.crowded * pair;
+        if (clearance < spacing) {
           if (closestApproach.lengthSq() < 0.01) closestApproach.copy(delta);
           separation.addScaledVector(
             closestApproach,
-            -(SHOAL.spacing - clearance) /
-              (SHOAL.spacing * Math.max(closestApproach.length(), 0.05)),
+            -(spacing - clearance) /
+              (spacing * Math.max(closestApproach.length(), 0.05)),
           );
-          if (clearance < SHOAL.crowded) crowded = true;
+          if (clearance < crowding) crowded = true;
         }
         if (
           other.mode === "travel" &&
@@ -1261,7 +1374,7 @@ export function createFishSchool(
         if (f.mode === "feed") {
           // A fish eats with its snout, and at these distances the difference between its
           // snout and its centre is most of the reach of a strike.
-          mouth.copy(position).addScaledVector(heading, snoutX * f.scale);
+          mouth.copy(position).addScaledVector(heading, snoutX * size);
           bite.subVectors(f.food.position, mouth);
           foodDistance = bite.length();
           // Pursuit lags: the fish steers at where it saw the pellet a fraction of a
@@ -1307,7 +1420,7 @@ export function createFishSchool(
             scan
               .copy(splash.point)
               .add(wash.set(range(-0.9, 0.9), range(-0.5, 0.15), range(-0.7, 0.7)));
-            travel(f, clampToBox(scan, BOUNDS, 0.45), true);
+            travel(f, clampToBox(scan, BOUNDS, 0.45, sizeScale(f.age, f.adult)), true);
           }
         }
       }
@@ -1337,14 +1450,18 @@ export function createFishSchool(
       obstacles.forEach((obstacle, index) => {
         delta.subVectors(position, obstacle.center);
         const distance = delta.length();
-        const surface = distance - obstacle.radius - f.scale * 0.23;
+        const surface = distance - obstacle.radius - size * 0.23;
         // A fish may come close to the thing it is looking at.
         const buffer =
           f.interest && f.interest.obstacle === index ? 0.12 : 0.7;
         if (surface < buffer && distance > 0.001)
           avoid.addScaledVector(delta, ((buffer - surface) * 1.25) / distance);
       });
-      const wallDistance = 1.2;
+      // How close to a wall or the sand this fish keeps is measured in its own body: an
+      // adult holds the tuned 1.2-unit buffer, a fry only a proportional 0.4 of it. The
+      // `size / f.scale` ratio is the baby's growth so far (1 for a full-grown fish), and
+      // every adult keeps exactly the old fixed distances.
+      const wallDistance = 1.2 * (size / f.scale);
       for (const [axis, minimum, maximum] of [
         ["x", BOUNDS.minX, BOUNDS.maxX],
         ["y", BOUNDS.minY, BOUNDS.maxY],
@@ -1355,7 +1472,8 @@ export function createFishSchool(
         if (position[axis] > maximum - wallDistance)
           avoid[axis] -= (position[axis] - maximum + wallDistance) * 1.2;
       }
-      const floor = groundHeight(position.x, position.z) + GROUND_CLEARANCE;
+      const floor =
+        groundHeight(position.x, position.z) + GROUND_CLEARANCE * (size / f.scale);
       if (position.y < floor + wallDistance)
         avoid.y += (floor + wallDistance - position.y) * 0.6;
 
@@ -1401,7 +1519,7 @@ export function createFishSchool(
           desired.multiplyScalar(speed / remaining);
         } else desired.set(0, 0, 0);
       } else if (mode === "feed") {
-        const length = standardLength * f.scale;
+        const length = standardLength * size;
         // How much faster than a stalk this fish arrived, which is what spoils its aim
         // and what makes its bow wave push the pellet away.
         const hurried = THREE.MathUtils.clamp(
@@ -1523,7 +1641,7 @@ export function createFishSchool(
           steer = true;
         } else if (
           f.mode === "feed" &&
-          foodDistance < FORAGE.brakeRange * standardLength * f.scale
+          foodDistance < FORAGE.brakeRange * standardLength * size
         ) {
           // Close in, the body lines up with the pellet rather than with wherever the
           // sum of every other pull points: head down for one on the sand and head up for
@@ -1586,7 +1704,7 @@ export function createFishSchool(
         // The pectorals come out at the end of an approach, and the fish is able to back
         // water far harder than it ever needs to while cruising.
         const braking =
-          f.mode === "feed" && foodDistance < FORAGE.brakeRange * standardLength * f.scale
+          f.mode === "feed" && foodDistance < FORAGE.brakeRange * standardLength * size
             ? SWIM.feedBrake
             : SWIM.brake;
         if (f.stroke && (elapsed >= f.stroke.end || forward < -braking)) {
@@ -1629,7 +1747,25 @@ export function createFishSchool(
       );
       f.velocity.copy(swim).add(water);
       position.addScaledVector(f.velocity, dt);
-      clampToBox(position, BOUNDS);
+      // The hard, unbreakable clamp is body-aware: a fish is bound to keep WALL_MARGIN
+      // times its own growth off a wall or the ceiling (an adult holds the full margin, a
+      // fry only a proportional fraction, so a small fish is genuinely allowed closer to
+      // the boundaries), while the floor clears the sand by GROUND_CLEARANCE times growth
+      // alone -- kept separate from the wall margin so a fish feeding on a settled pellet
+      // can still get its mouth down to the sand. (Passing a zero margin here, as the
+      // previous hard clamp did, made the size argument meaningless for the walls and
+      // ceiling; every fish was then free to be pressed to the exact boundary regardless
+      // of its body.) This is the final safety net after the soft `avoid` terms above.
+      const bodyMargin = WALL_MARGIN * (size / f.scale);
+      const hardFloor = groundHeight(position.x, position.z) + GROUND_CLEARANCE * (size / f.scale);
+      position.x = THREE.MathUtils.clamp(position.x, BOUNDS.minX + bodyMargin, BOUNDS.maxX - bodyMargin);
+      position.z = THREE.MathUtils.clamp(position.z, BOUNDS.minZ + bodyMargin, BOUNDS.maxZ - bodyMargin);
+      // The vertical band is bounded above by the ceiling margin and below by the higher of
+      // the tank's own floor (minY) and the sand clearance, so a fish over a low patch of
+      // sand never slips beneath the tank's bounding floor.
+      if (position.y > BOUNDS.maxY - bodyMargin) position.y = BOUNDS.maxY - bodyMargin;
+      const floorY = Math.max(BOUNDS.minY, hardFloor);
+      if (position.y < floorY) position.y = floorY;
 
       // Yaw rate over speed is the curvature of the path; the body conforms to it, up to
       // the C-bend a small fish can make, with the lag of its muscles. A flick prescribes
@@ -1659,7 +1795,7 @@ export function createFishSchool(
             : // Flared through the brake and held out through the stalk: the single most
               // legible "this fish is about to eat something" pose in the sequence.
               f.mode === "feed"
-              ? foodDistance < FORAGE.brakeRange * standardLength * f.scale && !flick
+              ? foodDistance < FORAGE.brakeRange * standardLength * size && !flick
                 ? 0.9
                 : 0
               : f.mode === "hover" && !flick
@@ -1687,7 +1823,7 @@ export function createFishSchool(
       );
       targetQuaternion.multiply(bankQuaternion);
       f.quaternion.copy(targetQuaternion);
-      scale.setScalar(f.scale);
+      scale.setScalar(size);
       instance.compose(position, f.quaternion, scale);
       bodies.setMatrixAt(f.id, instance);
       membranes.setMatrixAt(f.id, instance);
@@ -1704,15 +1840,20 @@ export function createFishSchool(
     update,
     fish,
     // The durable population for this tank, as pure data a host can store: each fish's
-    // stable id, species key and current age. Everything else in `fish` is render state
-    // and never leaves the machine.
+    // stable id, species key, current running age and remaining breeding cooldown, plus
+    // the tank-wide birth cooldown. Everything else in `fish` is render state and never
+    // leaves the machine. It is written from the authoritative `state` records so a save
+    // can never drift from what breeding.js actually decided.
     snapshotPopulation() {
       return {
         version: SAVE_VERSION,
-        fish: fish.map((f) => ({
-          id: f.sid,
-          species: f.species,
-          age: f.age,
+        breedIn: state.breedIn,
+        fish: state.fish.map((r) => ({
+          id: r.id,
+          species: r.species,
+          age: r.age,
+          breedIn: r.breedIn,
+          adult: r.adult === true,
         })),
       };
     },
@@ -1731,10 +1872,10 @@ export function createFishSchool(
         maximumSpeed = Math.max(maximumSpeed, speed);
       }
       return {
-        count: COUNT,
+        count: fish.length,
         states,
         twitching,
-        averageSpeed: totalSpeed / COUNT,
+        averageSpeed: totalSpeed / Math.max(1, fish.length),
         maximumSpeed,
         pointerResponses: startled,
         escapes,

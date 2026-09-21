@@ -467,7 +467,7 @@ async function start() {
     framebuffer: [target.width, target.height], samples: target.samples,
     shadowSize: settings.shadowSize,
     shadowHz: Number.isFinite(settings.shadowHz) ? settings.shadowHz : "per-frame",
-    renderedFrames, shadowFrames, simulationTime: time,
+    renderedFrames, shadowFrames, simulationTime: time, fish: fish.fish.length,
     drawCalls: renderer.info.render.calls, triangles: renderer.info.render.triangles,
     plants: { ...plants.stats }, loop: loop.state,
   });
