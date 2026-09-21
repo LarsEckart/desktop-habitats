@@ -7,6 +7,7 @@ import { randomGenerator } from "./math.js";
 import { waterTime } from "./water.js";
 import { createFrameLoop } from "./frame-loop.js";
 import { renderSettings, framebufferSize } from "./render-policy.js";
+import { measurementOptions, measurementSettings } from "./measurement-options.js";
 import { createTankStorage } from "./tank-storage.js";
 import { createPopulation, serialize, uid } from "./tank-state.js";
 import { createTurtle } from "./turtle.js";
@@ -23,12 +24,14 @@ let paused =
   document.documentElement.dataset.motion !== "host" &&
   matchMedia("(prefers-reduced-motion: reduce)").matches;
 const query = new URLSearchParams(location.search);
+const measurements = measurementOptions(query);
+const sceneSettings = (options) => measurementSettings(renderSettings(options), measurements);
 const wallpaper = document.documentElement.dataset.motion === "host";
 const profile = query.get("quality") === "reference" ? "reference" : "balanced";
 if (query.get("still") === "1") paused = true;
 let onBattery = false;
-let settings = renderSettings({ profile, wallpaper, pixelRatio: devicePixelRatio });
-let requestedRate = wallpaper ? 0 : 60;
+let settings = sceneSettings({ profile, wallpaper, pixelRatio: devicePixelRatio });
+let requestedRate = wallpaper ? 0 : (measurements.fps ?? 60);
 let loop = null, applyPower = null;
 // Assigned inside start() once the save machinery exists (after the school is built). The
 // host rate-down path needs to flush the population the moment it stops the tank, so the
@@ -45,7 +48,7 @@ window.habitatPower = (battery) => {
   const next = Boolean(battery);
   if (next === onBattery) return;
   onBattery = next;
-  settings = renderSettings({ profile, wallpaper, pixelRatio: devicePixelRatio, onBattery });
+  settings = sceneSettings({ profile, wallpaper, pixelRatio: devicePixelRatio, onBattery });
   applyPower?.();
 };
 // A pinch of food, for a host with no pointer to click with. Defined before the scene
@@ -184,7 +187,9 @@ async function start() {
     obstacles: turtleObstacles,
     turtle: population.turtle ?? { id: uid() },
   });
-  const particles = createParticles(scene, { thickets: plants.thickets });
+  if (measurements.plants === false) plants.mesh.visible = false;
+  const particles = measurements.particles === false ? null :
+    createParticles(scene, { thickets: plants.thickets });
 
   const target = new THREE.WebGLRenderTarget(1, 1, {
     type: THREE.HalfFloatType,
@@ -215,7 +220,7 @@ async function start() {
           float difference=center-sampleDepth;
           occlusion+=smoothstep(.012,.13,difference)*(1.-smoothstep(.2,.8,difference));
         }
-        color*=1.-occlusion*${(0.022 * 12 / settings.aoSamples).toFixed(8)};
+        color*=1.-occlusion*${(0.022 * 12 / Math.max(1, settings.aoSamples)).toFixed(8)};
         float vignette=dot((vUv-.5)*vec2(1.,.85),(vUv-.5)*vec2(1.,.85));
         color*=1.-vignette*.15;
         gl_FragColor=vec4(color,1.);
@@ -234,7 +239,7 @@ async function start() {
   function resize() {
     const bounds = canvas.getBoundingClientRect();
     // DPR may change when a preview moves between monitors.
-    settings = renderSettings({ profile, wallpaper, pixelRatio: devicePixelRatio, onBattery });
+    settings = sceneSettings({ profile, wallpaper, pixelRatio: devicePixelRatio, onBattery });
     const dimensions = framebufferSize(bounds.width, bounds.height, settings.resolution, maxDimension);
     zeroSize = !dimensions;
     // A tank that stops being drawn because it has no size should still persist the latest
@@ -255,7 +260,7 @@ async function start() {
       post.uniforms.aoRadiusScale.value = scale / settings.referenceResolution;
       camera.aspect = bounds.width / bounds.height;
       camera.updateProjectionMatrix();
-      particles.update(height / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2)));
+      particles?.update(height / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2)));
       forceShadows = true;
       loop?.invalidate();
     }
@@ -482,7 +487,8 @@ async function start() {
   window.addEventListener("pagehide", saveNow);
   canvas.addEventListener("webglcontextlost", saveNow);
   window.habitatStats = () => ({
-    profile, onBattery, resolution: settings.resolution,
+    profile, onBattery, measurements: { ...measurements }, aoSamples: settings.aoSamples,
+    resolution: settings.resolution,
     framebuffer: [target.width, target.height], samples: target.samples,
     shadowSize: settings.shadowSize,
     shadowHz: Number.isFinite(settings.shadowHz) ? settings.shadowHz : "per-frame",

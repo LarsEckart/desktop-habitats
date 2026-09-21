@@ -2,6 +2,21 @@ import assert from 'node:assert/strict';
 import { renderSettings, framebufferSize } from '../src/render-policy.js';
 import { createFrameLoop } from '../src/frame-loop.js';
 
+const { measurementOptions, measurementSettings } = await import('../src/measurement-options.js');
+const experiment = (s) => measurementOptions(new URLSearchParams(s));
+assert.deepEqual(experiment('particles=0&resolution=1&fps=30'), {});
+assert.deepEqual(experiment('diagnostics=1&particles=0&ao=0&plants=0&resolution=1&shadowHz=0&fps=30'),
+  { particles: false, ao: false, plants: false, resolution: 1, shadowHz: 0, fps: 30 });
+assert.deepEqual(experiment('diagnostics=1&resolution=NaN&shadowHz=&fps=999&particles=oops'), {});
+const original = renderSettings();
+assert.deepEqual(measurementSettings(original, {}), original);
+const trial = measurementSettings(original, { resolution: 1, shadowHz: 0, ao: false });
+assert.equal(trial.resolution, 1);
+assert.equal(trial.shadowHz, 0);
+assert.equal(trial.aoSamples, 0);
+assert.equal(trial.samples, 4);
+assert.equal(original.aoSamples, 8);
+
 const reference = renderSettings({ profile: 'reference', wallpaper: true, pixelRatio: 2 });
 const balanced = renderSettings({ wallpaper: true, pixelRatio: 2 });
 const battery = renderSettings({ wallpaper: true, pixelRatio: 2, onBattery: true });

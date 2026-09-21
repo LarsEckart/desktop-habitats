@@ -1,0 +1,716 @@
+[
+  {
+    "round": 1,
+    "name": "60-fps",
+    "seconds": 10.003929,
+    "fps": 59.9764352585869,
+    "rendererMainThreadPercent": 10.772817360059234,
+    "chromeGpuProcessCpuPercent": 20.92248955385424,
+    "before": {
+      "profile": "balanced",
+      "onBattery": false,
+      "measurements": {},
+      "aoSamples": 8,
+      "resolution": 1.25,
+      "framebuffer": [
+        2160,
+        1126
+      ],
+      "samples": 4,
+      "shadowSize": 2048,
+      "shadowHz": 30,
+      "renderedFrames": 180,
+      "shadowFrames": 68,
+      "simulationTime": 2.9918999999999993,
+      "drawCalls": 38,
+      "triangles": 1688362,
+      "plants": {
+        "backgroundCandidates": 1564,
+        "backgroundKept": 1094,
+        "backgroundVertices": 68922,
+        "backgroundTriangles": 87520,
+        "vertices": 374989,
+        "triangles": 502066
+      },
+      "loop": {
+        "fps": 60,
+        "paused": false,
+        "hidden": false,
+        "running": true,
+        "pending": true
+      }
+    },
+    "after": {
+      "profile": "balanced",
+      "onBattery": false,
+      "measurements": {},
+      "aoSamples": 8,
+      "resolution": 1.25,
+      "framebuffer": [
+        2160,
+        1126
+      ],
+      "samples": 4,
+      "shadowSize": 2048,
+      "shadowHz": 30,
+      "renderedFrames": 780,
+      "shadowFrames": 297,
+      "simulationTime": 12.991899999999992,
+      "drawCalls": 38,
+      "triangles": 1688362,
+      "plants": {
+        "backgroundCandidates": 1564,
+        "backgroundKept": 1094,
+        "backgroundVertices": 68922,
+        "backgroundTriangles": 87520,
+        "vertices": 374989,
+        "triangles": 502066
+      },
+      "loop": {
+        "fps": 60,
+        "paused": false,
+        "hidden": false,
+        "running": true,
+        "pending": true
+      }
+    }
+  },
+  {
+    "round": 1,
+    "name": "30-fps",
+    "seconds": 10.002538208000002,
+    "fps": 29.9923873082595,
+    "rendererMainThreadPercent": 7.8451587355336185,
+    "chromeGpuProcessCpuPercent": 13.198739885283306,
+    "before": {
+      "profile": "balanced",
+      "onBattery": false,
+      "measurements": {
+        "fps": 30
+      },
+      "aoSamples": 8,
+      "resolution": 1.25,
+      "framebuffer": [
+        2160,
+        1126
+      ],
+      "samples": 4,
+      "shadowSize": 2048,
+      "shadowHz": 30,
+      "renderedFrames": 92,
+      "shadowFrames": 56,
+      "simulationTime": 3,
+      "drawCalls": 58,
+      "triangles": 2847324,
+      "plants": {
+        "backgroundCandidates": 1564,
+        "backgroundKept": 1094,
+        "backgroundVertices": 68922,
+        "backgroundTriangles": 87520,
+        "vertices": 374989,
+        "triangles": 502066
+      },
+      "loop": {
+        "fps": 30,
+        "paused": false,
+        "hidden": false,
+        "running": true,
+        "pending": true
+      }
+    },
+    "after": {
+      "profile": "balanced",
+      "onBattery": false,
+      "measurements": {
+        "fps": 30
+      },
+      "aoSamples": 8,
+      "resolution": 1.25,
+      "framebuffer": [
+        2160,
+        1126
+      ],
+      "samples": 4,
+      "shadowSize": 2048,
+      "shadowHz": 30,
+      "renderedFrames": 392,
+      "shadowFrames": 238,
+      "simulationTime": 12.999999999999998,
+      "drawCalls": 38,
+      "triangles": 1688362,
+      "plants": {
+        "backgroundCandidates": 1564,
+        "backgroundKept": 1094,
+        "backgroundVertices": 68922,
+        "backgroundTriangles": 87520,
+        "vertices": 374989,
+        "triangles": 502066
+      },
+      "loop": {
+        "fps": 30,
+        "paused": false,
+        "hidden": false,
+        "running": true,
+        "pending": true
+      }
+    }
+  },
+  {
+    "round": 1,
+    "name": "30-fps-resolution-1",
+    "seconds": 10.005959499999998,
+    "fps": 30.08207258884069,
+    "rendererMainThreadPercent": 7.73193215503221,
+    "chromeGpuProcessCpuPercent": 13.38534300483626,
+    "before": {
+      "profile": "balanced",
+      "onBattery": false,
+      "measurements": {
+        "resolution": 1,
+        "fps": 30
+      },
+      "aoSamples": 8,
+      "resolution": 1,
+      "framebuffer": [
+        1728,
+        901
+      ],
+      "samples": 4,
+      "shadowSize": 2048,
+      "shadowHz": 30,
+      "renderedFrames": 91,
+      "shadowFrames": 52,
+      "simulationTime": 2.9668000000000005,
+      "drawCalls": 38,
+      "triangles": 1688362,
+      "plants": {
+        "backgroundCandidates": 1564,
+        "backgroundKept": 1094,
+        "backgroundVertices": 68922,
+        "backgroundTriangles": 87520,
+        "vertices": 374989,
+        "triangles": 502066
+      },
+      "loop": {
+        "fps": 30,
+        "paused": false,
+        "hidden": false,
+        "running": true,
+        "pending": true
+      }
+    },
+    "after": {
+      "profile": "balanced",
+      "onBattery": false,
+      "measurements": {
+        "resolution": 1,
+        "fps": 30
+      },
+      "aoSamples": 8,
+      "resolution": 1,
+      "framebuffer": [
+        1728,
+        901
+      ],
+      "samples": 4,
+      "shadowSize": 2048,
+      "shadowHz": 30,
+      "renderedFrames": 392,
+      "shadowFrames": 239,
+      "simulationTime": 13.00020000000005,
+      "drawCalls": 58,
+      "triangles": 2847324,
+      "plants": {
+        "backgroundCandidates": 1564,
+        "backgroundKept": 1094,
+        "backgroundVertices": 68922,
+        "backgroundTriangles": 87520,
+        "vertices": 374989,
+        "triangles": 502066
+      },
+      "loop": {
+        "fps": 30,
+        "paused": false,
+        "hidden": false,
+        "running": true,
+        "pending": true
+      }
+    }
+  },
+  {
+    "round": 2,
+    "name": "30-fps-resolution-1",
+    "seconds": 10.002125916999997,
+    "fps": 29.993623604568754,
+    "rendererMainThreadPercent": 7.858979246241779,
+    "chromeGpuProcessCpuPercent": 13.317698767778893,
+    "before": {
+      "profile": "balanced",
+      "onBattery": false,
+      "measurements": {
+        "resolution": 1,
+        "fps": 30
+      },
+      "aoSamples": 8,
+      "resolution": 1,
+      "framebuffer": [
+        1728,
+        901
+      ],
+      "samples": 4,
+      "shadowSize": 2048,
+      "shadowHz": 30,
+      "renderedFrames": 92,
+      "shadowFrames": 57,
+      "simulationTime": 2.991700000000002,
+      "drawCalls": 58,
+      "triangles": 2847324,
+      "plants": {
+        "backgroundCandidates": 1564,
+        "backgroundKept": 1094,
+        "backgroundVertices": 68922,
+        "backgroundTriangles": 87520,
+        "vertices": 374989,
+        "triangles": 502066
+      },
+      "loop": {
+        "fps": 30,
+        "paused": false,
+        "hidden": false,
+        "running": true,
+        "pending": true
+      }
+    },
+    "after": {
+      "profile": "balanced",
+      "onBattery": false,
+      "measurements": {
+        "resolution": 1,
+        "fps": 30
+      },
+      "aoSamples": 8,
+      "resolution": 1,
+      "framebuffer": [
+        1728,
+        901
+      ],
+      "samples": 4,
+      "shadowSize": 2048,
+      "shadowHz": 30,
+      "renderedFrames": 392,
+      "shadowFrames": 242,
+      "simulationTime": 12.991700000000007,
+      "drawCalls": 58,
+      "triangles": 2847324,
+      "plants": {
+        "backgroundCandidates": 1564,
+        "backgroundKept": 1094,
+        "backgroundVertices": 68922,
+        "backgroundTriangles": 87520,
+        "vertices": 374989,
+        "triangles": 502066
+      },
+      "loop": {
+        "fps": 30,
+        "paused": false,
+        "hidden": false,
+        "running": true,
+        "pending": true
+      }
+    }
+  },
+  {
+    "round": 2,
+    "name": "30-fps",
+    "seconds": 10.005843792,
+    "fps": 30.08242045919799,
+    "rendererMainThreadPercent": 7.766291540762443,
+    "chromeGpuProcessCpuPercent": 13.085003396183374,
+    "before": {
+      "profile": "balanced",
+      "onBattery": false,
+      "measurements": {
+        "fps": 30
+      },
+      "aoSamples": 8,
+      "resolution": 1.25,
+      "framebuffer": [
+        2160,
+        1126
+      ],
+      "samples": 4,
+      "shadowSize": 2048,
+      "shadowHz": 30,
+      "renderedFrames": 91,
+      "shadowFrames": 56,
+      "simulationTime": 2.9677000000000024,
+      "drawCalls": 58,
+      "triangles": 2847324,
+      "plants": {
+        "backgroundCandidates": 1564,
+        "backgroundKept": 1094,
+        "backgroundVertices": 68922,
+        "backgroundTriangles": 87520,
+        "vertices": 374989,
+        "triangles": 502066
+      },
+      "loop": {
+        "fps": 30,
+        "paused": false,
+        "hidden": false,
+        "running": true,
+        "pending": true
+      }
+    },
+    "after": {
+      "profile": "balanced",
+      "onBattery": false,
+      "measurements": {
+        "fps": 30
+      },
+      "aoSamples": 8,
+      "resolution": 1.25,
+      "framebuffer": [
+        2160,
+        1126
+      ],
+      "samples": 4,
+      "shadowSize": 2048,
+      "shadowHz": 30,
+      "renderedFrames": 392,
+      "shadowFrames": 235,
+      "simulationTime": 13.001000000000023,
+      "drawCalls": 38,
+      "triangles": 1688362,
+      "plants": {
+        "backgroundCandidates": 1564,
+        "backgroundKept": 1094,
+        "backgroundVertices": 68922,
+        "backgroundTriangles": 87520,
+        "vertices": 374989,
+        "triangles": 502066
+      },
+      "loop": {
+        "fps": 30,
+        "paused": false,
+        "hidden": false,
+        "running": true,
+        "pending": true
+      }
+    }
+  },
+  {
+    "round": 2,
+    "name": "60-fps",
+    "seconds": 10.004793875000003,
+    "fps": 59.971250532135514,
+    "rendererMainThreadPercent": 10.580038062003549,
+    "chromeGpuProcessCpuPercent": 19.23659821527308,
+    "before": {
+      "profile": "balanced",
+      "onBattery": false,
+      "measurements": {},
+      "aoSamples": 8,
+      "resolution": 1.25,
+      "framebuffer": [
+        2160,
+        1126
+      ],
+      "samples": 4,
+      "shadowSize": 2048,
+      "shadowHz": 30,
+      "renderedFrames": 182,
+      "shadowFrames": 70,
+      "simulationTime": 2.9998999999999993,
+      "drawCalls": 38,
+      "triangles": 1688362,
+      "plants": {
+        "backgroundCandidates": 1564,
+        "backgroundKept": 1094,
+        "backgroundVertices": 68922,
+        "backgroundTriangles": 87520,
+        "vertices": 374989,
+        "triangles": 502066
+      },
+      "loop": {
+        "fps": 60,
+        "paused": false,
+        "hidden": false,
+        "running": true,
+        "pending": true
+      }
+    },
+    "after": {
+      "profile": "balanced",
+      "onBattery": false,
+      "measurements": {},
+      "aoSamples": 8,
+      "resolution": 1.25,
+      "framebuffer": [
+        2160,
+        1126
+      ],
+      "samples": 4,
+      "shadowSize": 2048,
+      "shadowHz": 30,
+      "renderedFrames": 782,
+      "shadowFrames": 300,
+      "simulationTime": 12.999999999999982,
+      "drawCalls": 38,
+      "triangles": 1688362,
+      "plants": {
+        "backgroundCandidates": 1564,
+        "backgroundKept": 1094,
+        "backgroundVertices": 68922,
+        "backgroundTriangles": 87520,
+        "vertices": 374989,
+        "triangles": 502066
+      },
+      "loop": {
+        "fps": 60,
+        "paused": false,
+        "hidden": false,
+        "running": true,
+        "pending": true
+      }
+    }
+  },
+  {
+    "round": 3,
+    "name": "60-fps",
+    "seconds": 10.004638583000007,
+    "fps": 60.072135041562206,
+    "rendererMainThreadPercent": 10.608779029794155,
+    "chromeGpuProcessCpuPercent": 20.500540654063073,
+    "before": {
+      "profile": "balanced",
+      "onBattery": false,
+      "measurements": {},
+      "aoSamples": 8,
+      "resolution": 1.25,
+      "framebuffer": [
+        2160,
+        1126
+      ],
+      "samples": 4,
+      "shadowSize": 2048,
+      "shadowHz": 30,
+      "renderedFrames": 181,
+      "shadowFrames": 70,
+      "simulationTime": 2.983400000000002,
+      "drawCalls": 38,
+      "triangles": 1688362,
+      "plants": {
+        "backgroundCandidates": 1564,
+        "backgroundKept": 1094,
+        "backgroundVertices": 68922,
+        "backgroundTriangles": 87520,
+        "vertices": 374989,
+        "triangles": 502066
+      },
+      "loop": {
+        "fps": 60,
+        "paused": false,
+        "hidden": false,
+        "running": true,
+        "pending": true
+      }
+    },
+    "after": {
+      "profile": "balanced",
+      "onBattery": false,
+      "measurements": {},
+      "aoSamples": 8,
+      "resolution": 1.25,
+      "framebuffer": [
+        2160,
+        1126
+      ],
+      "samples": 4,
+      "shadowSize": 2048,
+      "shadowHz": 30,
+      "renderedFrames": 782,
+      "shadowFrames": 299,
+      "simulationTime": 12.99919999999999,
+      "drawCalls": 58,
+      "triangles": 2847324,
+      "plants": {
+        "backgroundCandidates": 1564,
+        "backgroundKept": 1094,
+        "backgroundVertices": 68922,
+        "backgroundTriangles": 87520,
+        "vertices": 374989,
+        "triangles": 502066
+      },
+      "loop": {
+        "fps": 60,
+        "paused": false,
+        "hidden": false,
+        "running": true,
+        "pending": true
+      }
+    }
+  },
+  {
+    "round": 3,
+    "name": "30-fps",
+    "seconds": 10.002194416999991,
+    "fps": 29.993418193322874,
+    "rendererMainThreadPercent": 7.695191354127432,
+    "chromeGpuProcessCpuPercent": 12.924033928023926,
+    "before": {
+      "profile": "balanced",
+      "onBattery": false,
+      "measurements": {
+        "fps": 30
+      },
+      "aoSamples": 8,
+      "resolution": 1.25,
+      "framebuffer": [
+        2160,
+        1126
+      ],
+      "samples": 4,
+      "shadowSize": 2048,
+      "shadowHz": 30,
+      "renderedFrames": 92,
+      "shadowFrames": 59,
+      "simulationTime": 2.991700000000002,
+      "drawCalls": 58,
+      "triangles": 2847324,
+      "plants": {
+        "backgroundCandidates": 1564,
+        "backgroundKept": 1094,
+        "backgroundVertices": 68922,
+        "backgroundTriangles": 87520,
+        "vertices": 374989,
+        "triangles": 502066
+      },
+      "loop": {
+        "fps": 30,
+        "paused": false,
+        "hidden": false,
+        "running": true,
+        "pending": true
+      }
+    },
+    "after": {
+      "profile": "balanced",
+      "onBattery": false,
+      "measurements": {
+        "fps": 30
+      },
+      "aoSamples": 8,
+      "resolution": 1.25,
+      "framebuffer": [
+        2160,
+        1126
+      ],
+      "samples": 4,
+      "shadowSize": 2048,
+      "shadowHz": 30,
+      "renderedFrames": 392,
+      "shadowFrames": 240,
+      "simulationTime": 12.991700000000003,
+      "drawCalls": 58,
+      "triangles": 2847324,
+      "plants": {
+        "backgroundCandidates": 1564,
+        "backgroundKept": 1094,
+        "backgroundVertices": 68922,
+        "backgroundTriangles": 87520,
+        "vertices": 374989,
+        "triangles": 502066
+      },
+      "loop": {
+        "fps": 30,
+        "paused": false,
+        "hidden": false,
+        "running": true,
+        "pending": true
+      }
+    }
+  },
+  {
+    "round": 3,
+    "name": "30-fps-resolution-1",
+    "seconds": 10.003877957999997,
+    "fps": 29.988370635818598,
+    "rendererMainThreadPercent": 7.672654576780277,
+    "chromeGpuProcessCpuPercent": 13.160096569822674,
+    "before": {
+      "profile": "balanced",
+      "onBattery": false,
+      "measurements": {
+        "resolution": 1,
+        "fps": 30
+      },
+      "aoSamples": 8,
+      "resolution": 1,
+      "framebuffer": [
+        1728,
+        901
+      ],
+      "samples": 4,
+      "shadowSize": 2048,
+      "shadowHz": 30,
+      "renderedFrames": 92,
+      "shadowFrames": 56,
+      "simulationTime": 2.9917000000000025,
+      "drawCalls": 58,
+      "triangles": 2847324,
+      "plants": {
+        "backgroundCandidates": 1564,
+        "backgroundKept": 1094,
+        "backgroundVertices": 68922,
+        "backgroundTriangles": 87520,
+        "vertices": 374989,
+        "triangles": 502066
+      },
+      "loop": {
+        "fps": 30,
+        "paused": false,
+        "hidden": false,
+        "running": true,
+        "pending": true
+      }
+    },
+    "after": {
+      "profile": "balanced",
+      "onBattery": false,
+      "measurements": {
+        "resolution": 1,
+        "fps": 30
+      },
+      "aoSamples": 8,
+      "resolution": 1,
+      "framebuffer": [
+        1728,
+        901
+      ],
+      "samples": 4,
+      "shadowSize": 2048,
+      "shadowHz": 30,
+      "renderedFrames": 392,
+      "shadowFrames": 244,
+      "simulationTime": 13.000100000000007,
+      "drawCalls": 58,
+      "triangles": 2847324,
+      "plants": {
+        "backgroundCandidates": 1564,
+        "backgroundKept": 1094,
+        "backgroundVertices": 68922,
+        "backgroundTriangles": 87520,
+        "vertices": 374989,
+        "triangles": 502066
+      },
+      "loop": {
+        "fps": 30,
+        "paused": false,
+        "hidden": false,
+        "running": true,
+        "pending": true
+      }
+    }
+  }
+]

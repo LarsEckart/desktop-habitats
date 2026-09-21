@@ -558,7 +558,8 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
       self.applyRate()
     }
 
-    // Running on the battery halves the frame rate; the scene is slow enough to hold up.
+    // Power changes adjust the scene's resolution and shadow budget. Both power
+    // sources use 30 fps: this slow-moving background does not need 60.
     if let source = IOPSNotificationCreateRunLoopSource({ _ in
       DispatchQueue.main.async { Controller.shared?.applyRate() }
     }, nil)?.takeRetainedValue() {
@@ -575,7 +576,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
   /// Draws for a moment even if the desktop is covered, then saves the frame.
   private func snapshot() {
     guard let first = screens.first else { return }
-    for screen in screens { screen.setRate(60) }
+    for screen in screens { screen.setRate(30) }
     DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in
       first.probe()
       first.snapshot(to: URL(fileURLWithPath: "/tmp/desktop-habitats.png")) {
@@ -669,7 +670,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
   /// Power depends on the machine and display; it must be measured on the target Mac.
   func applyRate() {
     let battery = onBattery
-    let full = battery ? 30 : 60
+    let full = 30
     let still = stopped || lowPower || !awake
     // Read the window list once for all displays, and never while deliberately still.
     let blockers = still ? [] : windowBlockers()
