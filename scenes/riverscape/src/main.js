@@ -8,7 +8,8 @@ import { waterTime } from "./water.js";
 import { createFrameLoop } from "./frame-loop.js";
 import { renderSettings, framebufferSize } from "./render-policy.js";
 import { createTankStorage } from "./tank-storage.js";
-import { createPopulation, serialize } from "./tank-state.js";
+import { createPopulation, serialize, uid } from "./tank-state.js";
+import { createTurtle } from "./turtle.js";
 
 const canvas = document.querySelector("#scene");
 const habitat = document.querySelector("#habitat");
@@ -157,7 +158,7 @@ async function start() {
   backboard.position.set(0, 7, -7.2);
   backboard.receiveShadow = true;
   scene.add(backboard);
-  const { obstacles, landmarks } = await createEnvironment(scene);
+  const { obstacles, turtleObstacles, landmarks } = await createEnvironment(scene);
   const plants = createPlants(scene, {
     ...settings, animatedShadows: profile !== "reference",
   });
@@ -174,6 +175,14 @@ async function start() {
     thickets: plants.thickets,
     food,
     population,
+  });
+  // One snapping turtle per tank, rest-only for now (issue 03). A save that already owns a
+  // turtle identity is restored whole -- no second turtle on restart. A save that predates
+  // turtles (an existing tank, or a fresh population) gets one minted here and the identity
+  // is folded into the next save, so the very tank that gained it never gains another.
+  const turtle = createTurtle(scene, {
+    obstacles: turtleObstacles,
+    turtle: population.turtle ?? { id: uid() },
   });
   const particles = createParticles(scene, { thickets: plants.thickets });
 
@@ -366,10 +375,19 @@ async function start() {
   // the next save point.
   const SAVE_INTERVAL_MS = 60_000; // tuning: how much running age a crash may lose
   let lastSave = -Infinity;
+  // The durable tank record: the fish population plus the single turtle identity, folded
+  // together so one save is atomic and a restart restores both (issue 01 + 03). Building it
+  // from the school's and turtle's snapshots means a save can never drift from what the
+  // simulation actually decided, exactly once per save.
+  function snapshotTank() {
+    const population = fish.snapshotPopulation();
+    population.turtle = turtle.snapshot();
+    return population;
+  }
   function persist() {
     let ok = false;
     try {
-      ok = tankStore.save(fish.snapshotPopulation());
+      ok = tankStore.save(snapshotTank());
     } catch (error) {
       console.warn("Riverscape: could not save the tank", error);
       return;
@@ -394,7 +412,7 @@ async function start() {
   // saves. It returns the serialized record, or null if the snapshot cannot be built.
   window.habitatSnapshot = () => {
     try {
-      return serialize(fish.snapshotPopulation());
+      return serialize(snapshotTank());
     } catch (error) {
       console.warn("Riverscape: could not build a snapshot for the host", error);
       return null;
@@ -423,6 +441,7 @@ async function start() {
       waterTime.value = time;
       food.update(step, time);
       fish.update(step, time, pointer);
+      turtle.update(step);
     }
     if (pointer && now - lastPointerTime > 60)
       pointer.velocity.multiplyScalar(Math.exp(-dt * 12));
@@ -468,6 +487,7 @@ async function start() {
     shadowSize: settings.shadowSize,
     shadowHz: Number.isFinite(settings.shadowHz) ? settings.shadowHz : "per-frame",
     renderedFrames, shadowFrames, simulationTime: time, fish: fish.fish.length,
+    turtle: turtle.getState().mode,
     drawCalls: renderer.info.render.calls, triangles: renderer.info.render.triangles,
     plants: { ...plants.stats }, loop: loop.state,
   });

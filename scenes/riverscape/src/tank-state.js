@@ -29,7 +29,7 @@ export { FRESH_COUNT, POPULATION_CAP, MATURITY_AGE, TANK_BREED_COOLDOWN };
 // Bump whenever the meaning of a saved record changes in a way an old reader could
 // misread. The reader treats any version above the one it knows as "too new to read"
 // and starts a fresh tank rather than guess.
-export const SAVE_VERSION = 2;
+export const SAVE_VERSION = 3;
 
 // Species are stored by a short stable key, never by a human-readable display name and
 // never by a numbered index, so renaming a species's label or moving it in a list cannot
@@ -93,6 +93,14 @@ export function roundAge(age) {
   return Math.round(Math.min(Math.max(n, 0), MAX_AGE_SECONDS) * 1000) / 1000;
 }
 
+/** A snapping turtle's durable record. In issue 03 it carries only an opaque identity --
+ * nothing a restart needs beyond who this turtle is. Its resting spot and rest/shuffle
+ * phase are render state and are intentionally not replayed (a fish's swimming position
+ * is not either). Hunger and cooldowns arrive with the hunting issue and extend this. */
+export function turtleRecord(id) {
+  return { id: String(id) };
+}
+
 /** A single fish's durable record. `breedIn` is the adult's remaining cooldown in running
  * seconds (0 means ready). `adult` marks a fish born full-grown — any fish whose history
  * predates growth (a v1 save, a fresh tank) — versus a baby born to grow. When absent on
@@ -122,10 +130,14 @@ export function createPopulation({
   breedIn = 0,
   tankBreedIn = TANK_BREED_COOLDOWN,
   id = uid,
+  turtleId = uid,
 } = {}) {
   const fish = [];
   for (let i = 0; i < count; i++) fish.push(fishRecord(id(), species, age, breedIn, true));
-  return { version: SAVE_VERSION, breedIn: tankBreedIn, fish };
+  // A brand-new tank starts with one turtle, so it is an environment that already owns it
+  // (issue 03: one turtle per tank, including existing tanks). `turtleId` is a separate
+  // maker so a deterministic test can drive the two identities independently.
+  return { version: SAVE_VERSION, breedIn: tankBreedIn, turtle: turtleRecord(turtleId()), fish };
 }
 
 // A v1 save is exactly the old fixed population: LEGACY_V1_COUNT (24) fish with only id,
@@ -146,10 +158,10 @@ function migrateV1(fish) {
 }
 
 /**
- * Validate a parsed save and normalize it into the canonical v2 shape. Returns
+ * Validate a parsed save and normalize it into the canonical v3 shape. Returns
  * { ok: true, state } on success or { ok: false, error } on any problem, never throws.
- * A v1 file is migrated (ids/species/ages/count kept, breeding fields defaulted); a v2
- * file is accepted with a variable population up to CAPACITY -- the larger of the legacy
+ * A v1 file is migrated (ids/species/ages/count kept, breeding fields defaulted); v2 and
+ * v3 files are accepted with a variable population up to CAPACITY -- the larger of the legacy
  * v1 count and the live birth cap, so a migrated 24-fish tank still restores and renders
  * even after a future tuning lowers POPULATION_CAP below 24. Births (breedMany) alone
  * stop at POPULATION_CAP; this ceiling only describes what restore/render may hold. Only
@@ -270,7 +282,30 @@ export function validate(value) {
     }
     tankBreedIn = value.breedIn;
   }
-  return { ok: true, state: { version: SAVE_VERSION, breedIn: tankBreedIn, fish } };
+  // The turtle identity is optional: v1/v2 saves and hand-built records carry none, and
+  // the live layer mints one turtle for such a tank (which is how an existing tank gets
+  // its first turtle without ever getting a second one). When a turtle field is present it
+  // must expose a real non-blank id, never coerced. A malformed turtle is deliberately
+  // dropped (turtle: null) rather than refusing the whole save: a turtle is regenerable, and
+  // refusing over a corruption in one field would unfairly throw away every fish. Future
+  // issues extend this record (hunger, cooldowns), so extra turtle fields are ignored here
+  // exactly the way a record's extra fields are.
+  let turtle = null;
+  if (value.turtle !== undefined && value.turtle !== null) {
+    const t = value.turtle;
+    if (
+      t &&
+      typeof t === "object" &&
+      !Array.isArray(t) &&
+      typeof t.id === "string" &&
+      t.id.trim()
+    ) {
+      turtle = turtleRecord(t.id);
+    }
+  }
+  const state = { version: SAVE_VERSION, breedIn: tankBreedIn, fish };
+  if (turtle) state.turtle = turtle;
+  return { ok: true, state };
 }
 
 /**

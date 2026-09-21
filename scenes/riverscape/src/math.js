@@ -66,6 +66,12 @@ export function groundHeight(x, z) {
   );
 }
 
+// The rendered sand adds a fine fixed ripple to the broad riverbed shape. Turtle contact
+// sampling uses this same function, so it follows the surface that is actually drawn.
+export function sandHeight(x, z) {
+  return groundHeight(x, z) + 0.008 * noise(x * 40, 0, z * 40);
+}
+
 export const smoothstep = (edge0, edge1, x) => {
   const t = THREE.MathUtils.clamp((x - edge0) / (edge1 - edge0), 0, 1);
   return t * t * (3 - 2 * t);

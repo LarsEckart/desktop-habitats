@@ -5,6 +5,7 @@ import {
   noise,
   random,
   randomGenerator,
+  sandHeight,
   range,
   smoothstep,
   vec,
@@ -458,7 +459,66 @@ function branchGeometry(points, baseRadius, tipRadius, seed) {
   geometry.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
   geometry.setIndex(indices);
   geometry.computeVertexNormals();
+  // Keep the exact tube layout beside the rendered vertices. Turtle-only collision uses
+  // these rings; fish keep their existing obstacle list and behavior.
+  geometry.userData.tubeRows = rows;
+  geometry.userData.tubeColumns = cols;
+  geometry.userData.tubeLength = length;
   return geometry;
+}
+
+function turtleRockObstacle(mesh) {
+  const positions = mesh.geometry.attributes.position;
+  const point = new THREE.Vector3();
+  let radius = 0;
+  for (let i = 0; i < positions.count; i++) {
+    point.fromBufferAttribute(positions, i).applyMatrix4(mesh.matrix);
+    radius = Math.max(radius, Math.hypot(
+      point.x - mesh.position.x,
+      point.z - mesh.position.z,
+    ));
+  }
+  return { kind: "rock", center: mesh.position.clone(), radius };
+}
+
+// Make conservative low-wood circles from the same rings that draw each branch. Grouping
+// nearby rings keeps the obstacle count small; each circle encloses every rendered vertex
+// in its group. High branch groups are ignored because the turtle passes below them.
+function turtleWoodObstacles(geometry) {
+  const positions = geometry.attributes.position;
+  const rows = geometry.userData.tubeRows;
+  const columns = geometry.userData.tubeColumns + 1;
+  const length = geometry.userData.tubeLength;
+  const stride = Math.max(1, Math.round(rows / Math.max(1, Math.ceil(length / 0.28))));
+  const obstacles = [];
+  for (let first = 0; first <= rows; first += stride) {
+    const last = Math.min(rows, first + stride - 1);
+    const middle = Math.floor((first + last) / 2);
+    let cx = 0, cz = 0;
+    for (let j = 0; j < columns; j++) {
+      const index = middle * columns + j;
+      cx += positions.getX(index);
+      cz += positions.getZ(index);
+    }
+    cx /= columns;
+    cz /= columns;
+    let radius = 0;
+    let low = false;
+    for (let row = first; row <= last; row++) {
+      for (let j = 0; j < columns; j++) {
+        const index = row * columns + j;
+        const x = positions.getX(index), y = positions.getY(index), z = positions.getZ(index);
+        radius = Math.max(radius, Math.hypot(x - cx, z - cz));
+        if (y <= sandHeight(x, z) + 0.86) low = true;
+      }
+    }
+    if (low) obstacles.push({
+      kind: "wood",
+      center: new THREE.Vector3(cx, 0, cz),
+      radius: radius + 0.025,
+    });
+  }
+  return obstacles;
 }
 
 function createContactShadows(scene, rocks) {
@@ -647,7 +707,7 @@ export async function createEnvironment(scene) {
   for (let i = 0; i < position.count; i++) {
     const x = position.getX(i),
       z = position.getZ(i);
-    position.setY(i, groundHeight(x, z) + 0.008 * noise(x * 40, 0, z * 40));
+    position.setY(i, sandHeight(x, z));
     // Sand darkens under the canopy toward the back; the open channel stays lit further in.
     const lit = THREE.MathUtils.smoothstep(z, -4.4, 0.6);
     const litChannel = THREE.MathUtils.smoothstep(z, -6.0, -1.2);
@@ -660,6 +720,7 @@ export async function createEnvironment(scene) {
   );
   ground.computeVertexNormals();
   const sand = new THREE.Mesh(ground, sandMaterial);
+  sand.name = "Riverbed sand";
   sand.receiveShadow = true;
   scene.add(sand);
   // Only the most sheltered sand films over; a healthy riverbed is mostly clean.
@@ -671,6 +732,9 @@ export async function createEnvironment(scene) {
   ).filter((s) => s.position.z > -3.6 && Math.abs(s.position.x) < 9.5);
 
   const obstacles = [];
+  // This separate list encloses rendered rock and low-wood vertices for the broad turtle.
+  // Fish continue to use `obstacles` unchanged.
+  const turtleObstacles = [];
   const landmarks = [];
   const rockSamples = [];
   // The pale stone is a lighter piece of the same rock, not a second kind of stone.
@@ -707,6 +771,7 @@ export async function createEnvironment(scene) {
     );
     const radius = Math.max(r.rx, r.ry, r.rz) * 0.82;
     obstacles.push({ center: mesh.position.clone(), radius });
+    turtleObstacles.push(turtleRockObstacle(mesh));
     if (radius > 0.5)
       landmarks.push({
         kind: "rock",
@@ -780,6 +845,7 @@ export async function createEnvironment(scene) {
     woodSamples.push(
       ...growMoss(geometry, mesh.matrix, (p, index) => 0.7 * (1 - tints.getX(index)), 0.04),
     );
+    turtleObstacles.push(...turtleWoodObstacles(geometry));
     if (branch.obstacle) {
       const curve = new THREE.CatmullRomCurve3(points);
       const steps = Math.ceil(curve.getLength() / 0.75);
@@ -804,7 +870,7 @@ export async function createEnvironment(scene) {
     { samples: rockSamples, count: 800, scale: 0.5 },
     { samples: sandSamples, count: 80, scale: 0.6 },
   ]);
-  return { obstacles, landmarks };
+  return { obstacles, turtleObstacles, landmarks };
 }
 
 // Suspended matter that reveals the water: flecks of detritus carried by the current, and
