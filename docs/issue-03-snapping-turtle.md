@@ -1,6 +1,6 @@
 # Add a bottom-dwelling snapping turtle
 
-Status: Draft
+Status: Implemented; acceptance review pending. See [the verification workbench](verification.md) for evidence and remaining checks. The original “does not hunt yet” check describes this issue's stage; issue 04 adds hunting.
 Dependencies: [Fish state and saving](issue-01-fish-state-and-saving.md)
 Related: [Babies and growth](issue-02-babies-and-growth.md) can ship independently of this issue.
 

@@ -1,6 +1,6 @@
 # Fish state and saving
 
-Status: Draft
+Status: Implemented; acceptance review pending. See [the verification workbench](verification.md) for evidence and remaining checks.
 Dependencies: None
 
 ## Goal

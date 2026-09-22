@@ -24,15 +24,22 @@ let paused =
   document.documentElement.dataset.motion !== "host" &&
   matchMedia("(prefers-reduced-motion: reduce)").matches;
 const query = new URLSearchParams(location.search);
+const verificationGate = query.get("diagnostics") === "1" && query.get("verify") === "1";
 const measurements = measurementOptions(query);
 const sceneSettings = (options) => measurementSettings(renderSettings(options), measurements);
 const wallpaper = document.documentElement.dataset.motion === "host";
 const profile = query.get("quality") === "reference" ? "reference" : "balanced";
 if (query.get("still") === "1") paused = true;
+// A verification run must begin frozen: the first state is reproducible and the runner
+// chooses when normal playback starts. This branch is unreachable in production URLs.
+if (verificationGate) paused = true;
 let onBattery = false;
 let settings = sceneSettings({ profile, wallpaper, pixelRatio: devicePixelRatio });
-let requestedRate = wallpaper ? 0 : (measurements.fps ?? 60);
+let requestedRate = verificationGate ? (measurements.fps ?? 60) : (wallpaper ? 0 : (measurements.fps ?? 60));
 let loop = null, applyPower = null;
+let verification = null;
+let verificationModule = null;
+let suppressVerificationSave = false;
 // Assigned inside start() once the save machinery exists (after the school is built). The
 // host rate-down path needs to flush the population the moment it stops the tank, so the
 // very last age is persisted before a teardown that a pagehide save might never get to run.
@@ -66,6 +73,12 @@ function fail(error) {
 }
 
 async function start() {
+  // Verification is a dev-only module and storage path. Production pages do not import,
+  // construct, or poll it when either URL gate is absent.
+  if (verificationGate) {
+    verificationModule = await import("./verification.js");
+    verification = verificationModule.createVerificationSession({ query });
+  }
   const renderer = new THREE.WebGLRenderer({
     canvas,
     antialias: false,
@@ -170,8 +183,10 @@ async function start() {
   // which hands back snapshots of exactly what to keep on disk. A missing, unreadable or
   // too-new save resolves to null here and a fresh population is built instead, so a bad
   // file can never stop the aquarium from starting.
-  const tankStore = createTankStorage();
-  const population = tankStore.initial() ?? createPopulation();
+  const tankStore = verification ? verification.storage() : createTankStorage();
+  const population = verification
+    ? verification.load() ?? verification.fixture
+    : tankStore.initial() ?? createPopulation();
   // One snapping turtle per tank. A save that already owns a turtle is restored whole, with
   // its hunger and cooldowns -- no second turtle on restart. A save that predates turtles
   // (an existing tank, or a fresh population) gets one minted here and the record is folded
@@ -181,16 +196,28 @@ async function start() {
   // school is built just below; the hooks only run from inside the frame loop.
   const turtle = createTurtle(scene, {
     obstacles: turtleObstacles,
+    random: verification ? randomGenerator(verification.seed + 1) : randomGenerator(791913),
+    options: verification?.options,
     // Swimming up for air clears the fish obstacles (trunk and branches included) and the
     // turtle never lands in a grass bed.
     swimObstacles: obstacles,
     beds: plants.thickets,
-    turtle: population.turtle ?? { id: uid() },
-    onCatch: (sid) => fish.remove(sid),
-    onSnap: (snap) => fish.scatter(snap),
+    turtle: population.turtle ?? {
+      id: verification ? `verify-${verification.scenario}-turtle` : uid(),
+    },
+    onCatch: (sid) => {
+      const removed = fish.remove(sid);
+      if (verification) verification.record(time, "hunt-catch", { preyId: sid, removed });
+      return removed;
+    },
+    onSnap: (snap) => {
+      const scattered = fish.scatter(snap);
+      if (verification) verification.record(time, "hunt-snap", { ...snap, scattered });
+    },
   });
   const fish = createFishSchool(scene, {
     obstacles,
+    random: verification ? randomGenerator(verification.seed) : randomGenerator(583137),
     landmarks,
     thickets: plants.thickets,
     food,
@@ -405,9 +432,10 @@ async function start() {
       ok = tankStore.save(snapshotTank());
     } catch (error) {
       console.warn("Riverscape: could not save the tank", error);
-      return;
+      return false;
     }
     if (!ok) console.warn("Riverscape: tank save was refused");
+    return ok;
   }
   // A lifecycle save is unconditional: pausing, hiding, losing the context, stopping or
   // closing the page all want the very latest age on disk, even if it is only seconds past
@@ -417,7 +445,24 @@ async function start() {
   // *lifecycle change* still needs its one final snapshot written.
   function saveNow() {
     lastSave = performance.now();
-    persist();
+    // location.reload() dispatches pagehide. Reset must not let that lifecycle save put
+    // the just-cleared fixture back into the verification namespace.
+    if (verification && suppressVerificationSave) return true;
+    return persist();
+  }
+  if (verification) {
+    verification.bind({
+      snapshot: snapshotTank,
+      turtleState: turtle.getState(),
+      stats: () => window.habitatStats?.() ?? {},
+      telemetry: () => fish.getTelemetry?.() ?? {},
+      paused: () => loop?.state.paused ?? paused,
+      simulationTime: () => time,
+    });
+    verification.prepareScene({ fish, turtle });
+    // Fixture placement changes live fish positions after the school's build-time update.
+    // Refresh instance matrices at dt=0 so a paused verification page is immediately visible.
+    fish.update(0, 0, null);
   }
   // Start with the population on disk so even a session that ends before the first
   // periodic save (a crash, a short-lived run) still retains its ids, species and age.
@@ -425,7 +470,7 @@ async function start() {
   // Bridge for the host (Wallpaper.swift) to pull the very latest snapshot at quit, rebuild
   // or rate-down, independent of the fire-and-forget message channel used for periodic
   // saves. It returns the serialized record, or null if the snapshot cannot be built.
-  window.habitatSnapshot = () => {
+  window.habitatSnapshot = verification ? () => null : () => {
     try {
       return serialize(snapshotTank());
     } catch (error) {
@@ -456,7 +501,14 @@ async function start() {
       waterTime.value = time;
       food.update(step, time);
       fish.update(step, time, pointer);
-      turtle.update(step, fish.fish);
+      if (verification) {
+        verification.observeFish(time, fish);
+        verification.beforeTurtleUpdate({ simulationTime: time, fish, turtle });
+        turtle.update(step, fish.fish);
+        verification.observeTurtle(time, turtle);
+      } else {
+        turtle.update(step, fish.fish);
+      }
     }
     if (pointer && now - lastPointerTime > 60)
       pointer.velocity.multiplyScalar(Math.exp(-dt * 12));
@@ -483,6 +535,40 @@ async function start() {
   loop = createFrameLoop(renderFrame, {
     fps: requestedRate, paused, hidden: document.hidden || zeroSize || contextLost,
   });
+  if (verification) {
+    // The paused loop may not have drawn yet when CDP takes its first screenshot. Draw a
+    // zero-time frame and warm both scene passes before exposing the public API.
+    renderFrame(0, performance.now());
+    try {
+      if (typeof renderer.compileAsync === "function") {
+        await renderer.compileAsync(scene, camera);
+        await renderer.compileAsync(postScene, postCamera);
+      } else {
+        renderer.compile(scene, camera);
+        renderer.compile(postScene, postCamera);
+      }
+    } catch (error) {
+      console.warn("Riverscape: verification shader warm-up failed", error);
+    }
+    renderFrame(0, performance.now());
+    const api = verification.api({
+      pause() { paused = true; loop.setPaused(true); saveNow(); },
+      play() { paused = false; loop.setPaused(false); },
+      step(frames) {
+        paused = true;
+        loop.setPaused(true);
+        for (let i = 0; i < frames; i++) renderFrame(1 / 60, performance.now());
+      },
+      save: saveNow,
+      reset: () => {
+        suppressVerificationSave = true;
+        location.reload();
+      },
+      reload: () => location.reload(),
+    });
+    window.habitatVerification = api;
+    verificationModule.installVerificationControls(api);
+  }
   // Lifecycle saves: capture the population exactly when the tank stops being drawn, so a
   // hidden tab, a covered/slept screen, a lost GL context or a closing page leaves a
   // correct record even if the next periodic save never runs. Each of these uses saveNow

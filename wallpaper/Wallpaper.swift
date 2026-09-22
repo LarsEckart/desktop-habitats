@@ -18,9 +18,30 @@ let sceneScheme = "desktop-habitats"
 let sceneHost = "local"
 let scenePage = "/scenes/riverscape/wallpaper.html"
 
+/// The production and development hosts share this seam. Production keeps its original
+/// desktop-window and support-store behavior; the dev target supplies a different support
+/// directory, URL query, and window mode without copying the host implementation.
+struct NativeHostConfiguration {
+  enum WindowMode: Equatable { case desktop, windowed }
+
+  var supportDirectoryName = "Desktop Habitats"
+  var scheme = sceneScheme
+  var page = scenePage
+  var windowMode: WindowMode = .desktop
+  var persistentTanks = true
+  var queryItems: [URLQueryItem] = []
+  var development = false
+  var devSupport: URL?
+  var devMetadata: [String: Any] = [:]
+  var devSnapshot = false
+
+  static let production = NativeHostConfiguration()
+}
+
 /// Serves the bundled copy of the aquarium to the web view.
 final class SceneHandler: NSObject, WKURLSchemeHandler {
   private let root: URL
+  private let scheme: String
   private static let types = [
     "html": "text/html",
     "js": "text/javascript",
@@ -30,7 +51,10 @@ final class SceneHandler: NSObject, WKURLSchemeHandler {
     "png": "image/png",
   ]
 
-  init(root: URL) { self.root = root.standardizedFileURL }
+  init(root: URL, scheme: String = sceneScheme) {
+    self.root = root.standardizedFileURL
+    self.scheme = scheme
+  }
 
   func webView(_ webView: WKWebView, start task: WKURLSchemeTask) {
     guard let url = task.request.url else { return }
@@ -55,10 +79,13 @@ final class SceneHandler: NSObject, WKURLSchemeHandler {
 /// Puts whatever the page complains about into the agent's log.
 final class Reporter: NSObject, WKScriptMessageHandler {
   static let shared = Reporter()
+  var onMessage: ((String) -> Void)?
   func userContentController(
     _ controller: WKUserContentController, didReceive message: WKScriptMessage
   ) {
-    NSLog("desktop-habitats page: \(message.body)")
+    let text = message.body as? String ?? String(describing: message.body)
+    if let onMessage { onMessage(text) }
+    else { NSLog("desktop-habitats page: \(text)") }
   }
 }
 
@@ -89,10 +116,10 @@ final class TankStore {
   private let tanksDir: URL
   private let mappingURL: URL
 
-  init() {
+  init(supportDirectoryName: String = "Desktop Habitats") {
     let support = FileManager.default.urls(
       for: .applicationSupportDirectory, in: .userDomainMask).first!
-      .appendingPathComponent("Desktop Habitats", isDirectory: true)
+      .appendingPathComponent(supportDirectoryName, isDirectory: true)
     tanksDir = support.appendingPathComponent("tanks", isDirectory: true)
     mappingURL = support.appendingPathComponent("displays.json")
     try? FileManager.default.createDirectory(at: tanksDir, withIntermediateDirectories: true)
@@ -204,9 +231,10 @@ final class TankSaveHandler: NSObject, WKScriptMessageHandler {
 /// A window that keeps the exact frame it is given. AppKit insets ordinary windows from
 /// the screen edges; a wallpaper has to reach them.
 final class DesktopWindow: NSWindow {
+  var acceptsKey = false
   override func constrainFrameRect(_ rect: NSRect, to screen: NSScreen?) -> NSRect { rect }
-  override var canBecomeKey: Bool { false }
-  override var canBecomeMain: Bool { false }
+  override var canBecomeKey: Bool { acceptsKey }
+  override var canBecomeMain: Bool { acceptsKey }
 }
 
 /// One screen's worth of aquarium.
@@ -216,14 +244,23 @@ final class Wallpaper: NSObject, WKNavigationDelegate {
   // This screen's tank id, resolved once and stored so the page's saves and the explicit
   // host flush both write to the same tank even a while after the window was set up.
   private let tankId: String
+  private let store: TankStore
+  private let configuration: NativeHostConfiguration
   private var loaded = false
   private var inside = false
+  private var errors: [String] = []
   private var rate = 0
   private var battery = false
 
-  init(screen: NSScreen, root: URL) {
+  init(
+    screen: NSScreen, root: URL, configuration: NativeHostConfiguration = .production,
+    store: TankStore = .shared
+  ) {
+    self.configuration = configuration
+    self.store = store
     let settings = WKWebViewConfiguration()
-    settings.setURLSchemeHandler(SceneHandler(root: root), forURLScheme: sceneScheme)
+    settings.setURLSchemeHandler(
+      SceneHandler(root: root, scheme: configuration.scheme), forURLScheme: configuration.scheme)
     settings.suppressesIncrementalRendering = true
     // The page holds no WebKit-local state worth keeping between runs: the only durable
     // state is the tank's population, which travels through the host bridge below into a
@@ -232,15 +269,19 @@ final class Wallpaper: NSObject, WKNavigationDelegate {
     // Load this display's tank so its population survives a restart. Keep the identity and
     // initial state on globals the page's storage adapter reads at startup, and hand every
     // save back to the host through a WebKit message instead of a browser datastore.
-    let tank = TankStore.shared
-    tankId = tank.tankId(for: screen)
-    let initialLiteral = tank.load(tankId).map(jsStringLiteral) ?? "null"
-    settings.userContentController.addUserScript(
-      WKUserScript(
-        source: "window.habitatTankId = \(jsStringLiteral(tankId));\n"
-          + "window.habitatTankInitial = \(initialLiteral);",
-        injectionTime: .atDocumentStart, forMainFrameOnly: true))
-    settings.userContentController.add(TankSaveHandler(tankId: tankId, store: tank), name: "tankSave")
+    tankId = store.tankId(for: screen)
+    let initialLiteral = configuration.persistentTanks
+      ? store.load(tankId).map(jsStringLiteral) ?? "null" : "null"
+    if configuration.persistentTanks {
+      settings.userContentController.addUserScript(
+        WKUserScript(
+          source: "window.habitatTankId = \(jsStringLiteral(tankId));\n"
+            + "window.habitatTankInitial = \(initialLiteral);",
+          injectionTime: .atDocumentStart, forMainFrameOnly: true))
+    }
+    if configuration.persistentTanks {
+      settings.userContentController.add(TankSaveHandler(tankId: tankId, store: store), name: "tankSave")
+    }
     // The agent has no window to look at, so anything the page reports goes to the log.
     settings.userContentController.addUserScript(
       WKUserScript(
@@ -278,7 +319,8 @@ final class Wallpaper: NSObject, WKNavigationDelegate {
         injectionTime: .atDocumentStart, forMainFrameOnly: true))
 
     view = WKWebView(frame: screen.frame, configuration: settings)
-    settings.userContentController.add(Reporter.shared, name: "report")
+    let reporter = Reporter()
+    settings.userContentController.add(reporter, name: "report")
     // WebKit stops a page whose window it thinks is covered, and AppKit never reports a
     // background agent's window as visible, so the scene would never start. This asks
     // WebKit not to make that call; the agent works out what is covered instead.
@@ -295,22 +337,36 @@ final class Wallpaper: NSObject, WKNavigationDelegate {
       contentRect: screen.frame, styleMask: .borderless, backing: .buffered, defer: false,
       screen: screen)
     super.init()
+    reporter.onMessage = { [weak self] text in
+      self?.errors.append(text)
+      NSLog("desktop-habitats [display \(screen.localizedName)]: \(text)")
+    }
 
     view.navigationDelegate = self
-    window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopWindow)))
-    window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
-    window.ignoresMouseEvents = true
+    if configuration.windowMode == .desktop {
+      window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopWindow)))
+      window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
+      window.ignoresMouseEvents = true
+      window.canHide = false
+    }
     window.isOpaque = true
     window.hasShadow = false
     window.backgroundColor = NSColor(calibratedRed: 0.031, green: 0.055, blue: 0.047, alpha: 1)
     window.isReleasedWhenClosed = false
+    window.acceptsKey = configuration.windowMode == .windowed
     window.contentView = view
     // Hiding the agent, or another app's "Hide Others", must not take the water away.
-    window.canHide = false
-    window.setFrame(screen.frame, display: true)
+    window.setFrame(
+      configuration.windowMode == .desktop ? screen.frame : screen.visibleFrame.insetBy(dx: 90, dy: 90),
+      display: true)
     window.orderFrontRegardless()
 
-    view.load(URLRequest(url: URL(string: "\(sceneScheme)://\(sceneHost)\(scenePage)")!))
+    var components = URLComponents()
+    components.scheme = configuration.scheme
+    components.host = sceneHost
+    components.path = configuration.page
+    components.queryItems = configuration.queryItems
+    view.load(URLRequest(url: components.url!))
   }
 
   /// Pulls the page's current population and writes it, then calls `done` exactly once. Used
@@ -340,7 +396,9 @@ final class Wallpaper: NSObject, WKNavigationDelegate {
     ) { value, _ in
       // The timeout may have already claimed completion; a late callback must save nothing.
       guard !finish.isClaimed else { return }
-      if let text = value as? String { TankStore.shared.save(self.tankId, text) }
+      if self.configuration.persistentTanks, let text = value as? String {
+        self.store.save(self.tankId, text)
+      }
       finish.call()
     }
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { finish.call() }
@@ -361,7 +419,9 @@ final class Wallpaper: NSObject, WKNavigationDelegate {
   private func teardown() {
     NotificationCenter.default.removeObserver(self)
     view.navigationDelegate = nil
-    view.configuration.userContentController.removeScriptMessageHandler(forName: "tankSave")
+    if configuration.persistentTanks {
+      view.configuration.userContentController.removeScriptMessageHandler(forName: "tankSave")
+    }
     view.configuration.userContentController.removeScriptMessageHandler(forName: "report")
     view.configuration.userContentController.removeAllUserScripts()
     view.removeFromSuperview()
@@ -431,7 +491,15 @@ final class Wallpaper: NSObject, WKNavigationDelegate {
     _ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!,
     withError error: Error
   ) {
+    errors.append(error.localizedDescription)
     NSLog("desktop-habitats: the scene did not load: \(error.localizedDescription)")
+  }
+
+  func webView(
+    _ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error
+  ) {
+    errors.append(error.localizedDescription)
+    NSLog("desktop-habitats: navigation failed: \(error.localizedDescription)")
   }
 
   /// What the page thinks it is doing, for the log.
@@ -468,12 +536,148 @@ final class Wallpaper: NSObject, WKNavigationDelegate {
       NSLog("desktop-habitats: wrote \(file.path)")
     }
   }
+
+  /// Collect current JS state and native state for the dev export. This is a read-only
+  /// diagnostics path: it never calls habitatSnapshot as a save and never touches the tank
+  /// store. In verification mode the controller also disables the host persistence bridge.
+  func diagnosticsExport(snapshotURL: URL?, completion: @escaping ([String: Any]) -> Void) {
+    let collectedAt = ISO8601DateFormatter().string(from: Date())
+    let frame = window.screen?.frame ?? window.frame
+    let native: [String: Any] = [
+      "loaded": loaded, "rate": rate, "battery": battery,
+      "windowVisible": window.isVisible,
+      "frame": ["x": frame.origin.x, "y": frame.origin.y,
+                "width": frame.width, "height": frame.height],
+      "tankId": tankId,
+      "persistence": configuration.persistentTanks ? "native" : "verification-isolated",
+      "mode": configuration.windowMode == .desktop ? "desktop" : "windowed",
+    ]
+    guard loaded else {
+      completion(["native": native, "js": NSNull(),
+                  "visualSnapshot": snapshotURL.map { ["requested": true, "path": $0.path] }
+                    ?? ["requested": false],
+                  "errors": errors + ["view has not finished navigation"], "fresh": false])
+      return
+    }
+    let script = """
+      (() => {
+        const call = (fn) => {
+          try { return typeof fn === 'function' ? fn() : null; }
+          catch (error) { return { error: String(error && (error.stack || error)) }; }
+        };
+        return JSON.stringify({
+          state: call(window.habitatVerification && window.habitatVerification.state),
+          stats: call(window.habitatStats),
+          snapshot: call(window.habitatSnapshot),
+          ready: document.readyState === 'complete',
+          statsReady: typeof window.habitatStats === 'function',
+          snapshotReady: typeof window.habitatSnapshot === 'function',
+          verificationReady: typeof window.habitatVerification?.state === 'function',
+          hidden: document.hidden
+        });
+      })()
+      """
+    view.evaluateJavaScript(script) { [weak self] value, error in
+      guard let self else { return }
+      var localErrors = self.errors
+      var payload: [String: Any] = [:]
+      if let error {
+        localErrors.append("diagnostics evaluation failed: \(error.localizedDescription)")
+      } else if let text = value as? String, let data = text.data(using: .utf8),
+        let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+        payload = object
+      } else {
+        localErrors.append("diagnostics returned invalid JSON")
+      }
+      let normalize: (Any?) -> Any = { value in
+        if let text = value as? String, let data = text.data(using: .utf8),
+          let object = try? JSONSerialization.jsonObject(with: data) { return object }
+        return value ?? NSNull()
+      }
+      let js: [String: Any] = [
+        "state": normalize(payload["state"]), "stats": normalize(payload["stats"]),
+        "snapshot": normalize(payload["snapshot"]),
+        "ready": payload["ready"] as? Bool ?? false,
+        "statsReady": payload["statsReady"] as? Bool ?? false,
+        "snapshotReady": payload["snapshotReady"] as? Bool ?? false,
+        "verificationReady": payload["verificationReady"] as? Bool ?? false,
+        "hidden": payload["hidden"] as? Bool ?? false,
+        "collectedAt": collectedAt,
+      ]
+      let ready = js["ready"] as? Bool ?? false
+      let apiReady = (js["statsReady"] as? Bool ?? false)
+        && (js["snapshotReady"] as? Bool ?? false)
+        && (self.configuration.devMetadata["verify"] as? Bool != true
+            || (js["verificationReady"] as? Bool ?? false))
+      let finish: ([String: Any]) -> Void = { visual in
+        let visualOK = visual["error"] == nil
+        completion(["native": native, "js": js, "visualSnapshot": visual,
+                    "errors": localErrors, "fresh": ready && apiReady && visualOK && localErrors.isEmpty])
+      }
+      guard let snapshotURL else {
+        finish(["requested": false])
+        return
+      }
+      self.view.takeSnapshot(with: nil) { image, snapshotError in
+        guard let image, let data = image.tiffRepresentation,
+          let png = NSBitmapImageRep(data: data)?.representation(using: .png, properties: [:])
+        else {
+          finish(["requested": true, "path": snapshotURL.path,
+                  "error": snapshotError?.localizedDescription ?? "WKWebView snapshot failed"])
+          return
+        }
+        do {
+          try png.write(to: snapshotURL, options: .atomic)
+          finish(["requested": true, "path": snapshotURL.path, "bytes": png.count])
+        } catch {
+          finish(["requested": true, "path": snapshotURL.path, "error": error.localizedDescription])
+        }
+      }
+    }
+  }
+}
+
+struct NativeExportRequest {
+  let id: String
+  let requestedAt: String
+  let file: URL
+
+  init?(file: URL) {
+    guard let data = try? Data(contentsOf: file),
+      let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+      let id = object["requestId"] as? String,
+      let requestedAt = object["requestedAt"] as? String,
+      !id.isEmpty, !requestedAt.isEmpty,
+      (id.allSatisfy { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" })
+    else { return nil }
+    self.id = id
+    self.requestedAt = requestedAt
+    self.file = file
+  }
+}
+
+private func writeNativeJSON(_ object: Any, to url: URL) throws {
+  let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+  try FileManager.default.createDirectory(
+    at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+  let temporary = url.deletingLastPathComponent()
+    .appendingPathComponent(".\(url.lastPathComponent).\(UUID().uuidString).tmp")
+  try data.write(to: temporary, options: .atomic)
+  if FileManager.default.fileExists(atPath: url.path) {
+    _ = try FileManager.default.replaceItemAt(url, withItemAt: temporary)
+  } else {
+    try FileManager.default.moveItem(at: temporary, to: url)
+  }
 }
 
 final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
   static var shared: Controller?
   private var screens: [Wallpaper] = []
   private var root = Bundle.main.resourceURL!.appendingPathComponent("scene")
+  private let configuration: NativeHostConfiguration
+  private let store: TankStore
+  private let processToken = UUID().uuidString
+  private let startedAt = ISO8601DateFormatter().string(from: Date())
   private var awake = true
   private var layout: [CGRect] = []
   // The persistent physical identity of each screen, kept alongside its frame so a rebuild
@@ -487,6 +691,9 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
   private var closing: [Wallpaper] = []
   private var lastPoint = NSPoint(x: -1e4, y: -1e4)
   private var snapshots: DispatchSourceSignal?
+  private var terminationSignal: DispatchSourceSignal?
+  private var devExportQueue: [NativeExportRequest] = []
+  private var devExportRunning = false
   private var status: NSStatusItem?
   private let state = NSMenuItem()
   private let pause = NSMenuItem()
@@ -499,8 +706,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
   /// Until one has been made there is nothing under the key at all, which is what lets a
   /// machine that asks for less motion start still without overruling anybody who has
   /// since decided otherwise.
-  private var stopped =
-    UserDefaults.standard.object(forKey: "paused") as? Bool ?? reduceMotion
+  private var stopped = false
   private var lowPower: Bool { ProcessInfo.processInfo.isLowPowerModeEnabled }
   /// Reduce Motion is a durable choice about the whole machine, not a passing shortage
   /// like Low Power Mode, so it decides how the wallpaper starts and never more than that:
@@ -509,9 +715,34 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
     NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
   }
   private var reduceMotion: Bool { Controller.reduceMotion }
+  private var preferences: UserDefaults {
+    if configuration.development {
+      return UserDefaults(suiteName: "com.chaselean.desktop-habitats.dev.preferences")!
+    }
+    return .standard
+  }
+
+  init(configuration: NativeHostConfiguration = .production) {
+    // A development configuration is honored only by the separately bundled target. If a
+    // production build ever receives one by mistake, it falls back to production behavior.
+    let safeConfiguration = configuration.development
+      && Bundle.main.bundleIdentifier != "com.chaselean.desktop-habitats.dev"
+      ? NativeHostConfiguration.production : configuration
+    self.configuration = safeConfiguration
+    self.store = TankStore(supportDirectoryName: safeConfiguration.supportDirectoryName)
+    super.init()
+    stopped = preferences.object(forKey: "paused") as? Bool ?? reduceMotion
+  }
 
   func applicationDidFinishLaunching(_ note: Notification) {
     Controller.shared = self
+    if let support = configuration.devSupport {
+      for directory in [support, support.appendingPathComponent("requests", isDirectory: true),
+                        support.appendingPathComponent("exports", isDirectory: true)] {
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+      }
+    }
+    NSApp.setActivationPolicy(configuration.windowMode == .windowed ? .regular : .accessory)
     build()
     addMenu()
 
@@ -553,7 +784,9 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
       forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil,
       queue: .main
     ) { [weak self] _ in
-      guard let self, UserDefaults.standard.object(forKey: "paused") == nil else { return }
+      guard let self,
+        self.configuration.development || self.preferences.object(forKey: "paused") == nil
+      else { return }
       self.stopped = self.reduceMotion
       self.applyRate()
     }
@@ -566,11 +799,23 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
       CFRunLoopAddSource(CFRunLoopGetMain(), source, .defaultMode)
     }
 
-    // `kill -USR1` writes what the first screen is showing to /tmp/desktop-habitats.png.
+    // Production keeps its historical SIGUSR1 still-frame helper. The dev target uses the
+    // same controller but routes SIGUSR1 to a request-token export in its own support folder.
     signal(SIGUSR1, SIG_IGN)
     snapshots = DispatchSource.makeSignalSource(signal: SIGUSR1, queue: .main)
-    snapshots?.setEventHandler { [weak self] in self?.snapshot() }
+    snapshots?.setEventHandler { [weak self] in
+      if self?.configuration.development == true { self?.processDevExportRequests() }
+      else { self?.snapshot() }
+    }
     snapshots?.resume()
+    if configuration.development {
+      signal(SIGTERM, SIG_IGN)
+      let terminate = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+      terminate.setEventHandler { NSApp.terminate(nil) }
+      terminate.resume()
+      terminationSignal = terminate
+      processDevExportRequests()
+    }
   }
 
   /// Draws for a moment even if the desktop is covered, then saves the frame.
@@ -593,7 +838,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // in place can keep the very same frame, so matching on CGRect alone would miss the
     // swap and never rebuild). Comparing the UUIDs catches a replacement at the same frame.
     let frames = NSScreen.screens.map(\.frame)
-    let ids = NSScreen.screens.map { TankStore.shared.identity(for: $0) }
+    let ids = NSScreen.screens.map { store.identity(for: $0) }
     guard frames != layout || ids != layoutIds else { return }
     drive(lifecycle.screenChanged())
   }
@@ -601,8 +846,10 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
   /// Initial launch: create every screen's window before any notification could rebuild.
   private func build() {
     layout = NSScreen.screens.map(\.frame)
-    layoutIds = NSScreen.screens.map { TankStore.shared.identity(for: $0) }
-    screens = NSScreen.screens.map { Wallpaper(screen: $0, root: root) }
+    layoutIds = NSScreen.screens.map { store.identity(for: $0) }
+    screens = NSScreen.screens.map {
+      Wallpaper(screen: $0, root: root, configuration: configuration, store: store)
+    }
     applyRate()
   }
 
@@ -627,7 +874,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
   /// while we were mid-flush).
   private func startRebuild() {
     layout = NSScreen.screens.map(\.frame)
-    layoutIds = NSScreen.screens.map { TankStore.shared.identity(for: $0) }
+    layoutIds = NSScreen.screens.map { store.identity(for: $0) }
     let closingNow = screens
     screens = []
     closing = closingNow       // hold the closing views strongly until every flush lands
@@ -643,7 +890,9 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
   /// right back into ordinary power/rate behavior. Never runs once termination has begun.
   private func recreateScreens() {
     guard !lifecycle.terminating else { return }
-    screens = NSScreen.screens.map { Wallpaper(screen: $0, root: root) }
+    screens = NSScreen.screens.map {
+      Wallpaper(screen: $0, root: root, configuration: configuration, store: store)
+    }
     applyRate()
   }
 
@@ -677,7 +926,12 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
     applied = 0
     var changed = false
     for (index, screen) in screens.enumerated() {
-      let showing = index < layout.count ? exposure(layout[index], blockers: blockers) : 1
+      // A windowed dev preview is its own app window, not a layer behind the desktop.
+      // Ordinary windows covering the *desktop* should not stop this preview. Desktop
+      // dev mode takes the same exposure path as the installed wallpaper.
+      let showing = configuration.windowMode == .windowed
+        ? (screen.window.occlusionState.contains(.visible) ? 1.0 : 0.0)
+        : (index < layout.count ? exposure(layout[index], blockers: blockers) : 1)
       let rate = still || showing < 0.15 ? 0 : showing < 0.4 ? 20 : full
       screen.setPower(battery)
       if screen.setRate(rate) { changed = true }
@@ -759,11 +1013,16 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
   /// The agent's only visible piece: a fish in the menu bar that can stop the water.
   private func addMenu() {
     let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-    let symbol = NSImage(systemSymbolName: "fish", accessibilityDescription: "Desktop Habitats")
+    let symbol = NSImage(
+      systemSymbolName: "fish",
+      accessibilityDescription: configuration.development ? "Desktop Habitats Dev" : "Desktop Habitats")
     symbol?.isTemplate = true
     item.button?.image = symbol
-    if symbol == nil { item.button?.title = "Desktop Habitats" }
-    item.button?.toolTip = "Desktop Habitats · Riverscape"
+    if symbol == nil {
+      item.button?.title = configuration.development ? "Habitats Dev" : "Desktop Habitats"
+    }
+    item.button?.toolTip = configuration.development
+      ? "Desktop Habitats Dev · Riverscape" : "Desktop Habitats · Riverscape"
 
     let menu = NSMenu()
     menu.delegate = self
@@ -823,7 +1082,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
   @objc private func togglePause() {
     stopped.toggle()
-    UserDefaults.standard.set(stopped, forKey: "paused")
+    preferences.set(stopped, forKey: "paused")
     applyRate()
   }
 
@@ -883,6 +1142,103 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
       screens[index].setPointer(
         frame.contains(point)
           ? NSPoint(x: point.x - frame.minX, y: frame.maxY - point.y) : nil)
+    }
+  }
+
+  // MARK: - Development export (same Controller, opt-in only)
+
+  private func processDevExportRequests() {
+    guard configuration.development, let support = configuration.devSupport else { return }
+    let requests = support.appendingPathComponent("requests", isDirectory: true)
+    let files = (try? FileManager.default.contentsOfDirectory(
+      at: requests, includingPropertiesForKeys: nil)) ?? []
+    for file in files.filter({ $0.pathExtension == "json" }).sorted(by: { $0.path < $1.path }) {
+      guard let request = NativeExportRequest(file: file) else { continue }
+      devExportQueue.append(request)
+      try? FileManager.default.removeItem(at: file)
+    }
+    startNextDevExport()
+  }
+
+  private func startNextDevExport() {
+    guard !devExportRunning, let request = devExportQueue.first,
+      let support = configuration.devSupport else { return }
+    devExportQueue.removeFirst()
+    devExportRunning = true
+    let snapshots = support.appendingPathComponent("exports/snapshots", isDirectory: true)
+    try? FileManager.default.createDirectory(at: snapshots, withIntermediateDirectories: true)
+    var results = Array<[String: Any]?>(repeating: nil, count: screens.count)
+    var remaining = screens.count
+    let finish = Finish { [weak self] in
+      guard let self else { return }
+      let complete = results.enumerated().map { index, result in
+        result ?? [
+          "native": ["loaded": false, "mode": self.configuration.windowMode == .desktop ? "desktop" : "windowed"],
+          "js": NSNull(), "visualSnapshot": ["requested": self.configuration.devSnapshot],
+          "errors": ["view export timed out"], "fresh": false,
+          "displayIndex": index,
+        ]
+      }
+      self.writeDevExport(request: request, views: complete)
+      self.devExportRunning = false
+      self.startNextDevExport()
+    }
+    if screens.isEmpty { finish.call(); return }
+    for (index, screen) in screens.enumerated() {
+      let displayID = index < layoutIds.count ? layoutIds[index] : "unknown-\(index)"
+      let path = configuration.devSnapshot
+        ? snapshots.appendingPathComponent("\(request.id)-display-\(index + 1).png") : nil
+      screen.diagnosticsExport(snapshotURL: path) { result in
+        guard !finish.isClaimed else { return }
+        var copy = result
+        copy["displayIndex"] = index
+        copy["displayId"] = displayID
+        results[index] = copy
+        remaining -= 1
+        if remaining == 0 { finish.call() }
+      }
+    }
+    // A hung WebKit process must produce an explicit incomplete export, not a read of an
+    // older response file. The CLI checks the request token and fresh=false on timeout.
+    DispatchQueue.main.asyncAfter(deadline: .now() + 8) { finish.call() }
+  }
+
+  private func writeDevExport(request: NativeExportRequest, views: [[String: Any]]) {
+    guard let support = configuration.devSupport else { return }
+    let generatedAt = ISO8601DateFormatter().string(from: Date())
+    let allFresh = views.allSatisfy { $0["fresh"] as? Bool == true }
+    let mapping = views.map { view in
+      ["displayId": view["displayId"] ?? NSNull(),
+       "tankId": (view["native"] as? [String: Any])?["tankId"] ?? NSNull()]
+    }
+    let object: [String: Any] = [
+      "schemaVersion": 1, "fresh": allFresh,
+      "requestId": request.id, "requestedAt": request.requestedAt, "generatedAt": generatedAt,
+      "process": [
+        "pid": ProcessInfo.processInfo.processIdentifier,
+        "token": processToken,
+        "startedAt": startedAt,
+        "bundleIdentifier": Bundle.main.bundleIdentifier ?? "unknown",
+      ],
+      "mode": configuration.windowMode == .desktop ? "desktop" : "windowed",
+      "flags": configuration.devMetadata,
+      "environment": [
+        "os": ProcessInfo.processInfo.operatingSystemVersionString,
+        "hostName": ProcessInfo.processInfo.hostName,
+        "processorCount": ProcessInfo.processInfo.processorCount,
+        "activeProcessorCount": ProcessInfo.processInfo.activeProcessorCount,
+        "physicalMemory": ProcessInfo.processInfo.physicalMemory,
+        "screenCount": NSScreen.screens.count,
+        "lowPowerMode": ProcessInfo.processInfo.isLowPowerModeEnabled,
+      ],
+      "mapping": mapping, "views": views,
+    ]
+    let output = support.appendingPathComponent("exports/\(request.id).json")
+    do {
+      try writeNativeJSON(object, to: output)
+      try writeNativeJSON(object, to: support.appendingPathComponent("exports/latest.json"))
+    } catch {
+      NSLog("Desktop Habitats Dev: could not write export \(request.id): \(error)")
     }
   }
 }

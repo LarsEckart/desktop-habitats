@@ -1,6 +1,6 @@
 # Turtle hunting and ecosystem balance
 
-Status: Draft
+Status: Implemented; acceptance review pending. See [the verification workbench](verification.md) for evidence and remaining checks.
 Dependencies:
 - [Fish state and saving](issue-01-fish-state-and-saving.md)
 - [Babies and growth](issue-02-babies-and-growth.md)
