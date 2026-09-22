@@ -429,6 +429,11 @@ export function createFishSchool(
     landmarks = [],
     thickets = [],
     food = null,
+    // A point the fish find worth a look that moves: the turtle's beak (issue 04). Fish
+    // visit it as they visit a rock, hanging just in front of it, which is what brings a
+    // fish within reach of an ambush predator that never chases. Updated in place by its
+    // owner; the school only reads it.
+    lure = null,
     species = bloodfinTetra,
     // A populated population to restore. Each record carries a stable id, species key,
     // running age and a breeding cooldown; a baby's mesh (position, pose) is still
@@ -535,6 +540,7 @@ export function createFishSchool(
         ),
         obstacle: -1,
       });
+  if (lure) interests.push({ kind: "turtle", point: lure, obstacle: -1 });
 
   let elapsed = 0;
   // The scene clock the water model runs on, kept so behaviours that need to know which
@@ -542,6 +548,8 @@ export function createFishSchool(
   let waterClock = 0;
   let startled = 0;
   let escapes = 0;
+  let scatters = 0;
+  let taken = 0;
   const initialPositions = [];
   // Build one live, renderable fish from its durable record. `id` is the live array/
   // instance index, recomputed on every load and never mistaken for the stable `sid`.
@@ -1258,6 +1266,8 @@ export function createFishSchool(
       // genuinely a smaller shape whose spacing, movement room and feeding reach all
       // scale to it, swelling smoothly over time.
       const size = f.scale * sizeScale(f.age, f.adult);
+      // Published for anything that judges a fish by its body, such as a predator.
+      f.size = size;
       shelteredVelocity(position, time, water, thickets);
       const bed = thicketAt(thickets, position);
       if (f.pendingEscape && elapsed >= f.pendingEscape.at) {
@@ -1462,20 +1472,24 @@ export function createFishSchool(
       // `size / f.scale` ratio is the baby's growth so far (1 for a full-grown fish), and
       // every adult keeps exactly the old fixed distances.
       const wallDistance = 1.2 * (size / f.scale);
+      // A fish that has gone down to look at the turtle keeps much less room off the sand,
+      // as a fish nosing a rock does; the hard clamp below still holds it clear of it.
+      const floorRoom = f.interest?.kind === "turtle" ? wallDistance * 0.25 : wallDistance;
       for (const [axis, minimum, maximum] of [
         ["x", BOUNDS.minX, BOUNDS.maxX],
         ["y", BOUNDS.minY, BOUNDS.maxY],
         ["z", BOUNDS.minZ, BOUNDS.maxZ],
       ]) {
-        if (position[axis] < minimum + wallDistance)
-          avoid[axis] += (minimum + wallDistance - position[axis]) * 1.2;
+        const below = axis === "y" ? floorRoom : wallDistance;
+        if (position[axis] < minimum + below)
+          avoid[axis] += (minimum + below - position[axis]) * 1.2;
         if (position[axis] > maximum - wallDistance)
           avoid[axis] -= (position[axis] - maximum + wallDistance) * 1.2;
       }
       const floor =
         groundHeight(position.x, position.z) + GROUND_CLEARANCE * (size / f.scale);
-      if (position.y < floor + wallDistance)
-        avoid.y += (floor + wallDistance - position.y) * 0.6;
+      if (position.y < floor + floorRoom)
+        avoid.y += (floor + floorRoom - position.y) * 0.6;
 
       // The ground velocity each mode asks for, then what the fish itself must swim once
       // the water's own motion is taken off.
@@ -1489,7 +1503,8 @@ export function createFishSchool(
       } else if (mode === "inspect") {
         // Hold just off the object, drifting slightly, with short pecks toward it.
         delta.subVectors(f.interest.point, position);
-        const standoff = f.interest.kind === "grass" ? 0.1 : 0.32;
+        const standoff = f.interest.kind === "grass" ? 0.1
+          : f.interest.kind === "turtle" ? 0.4 : 0.32;
         desired
           .copy(delta)
           .setLength(Math.max(0, delta.length() - standoff))
@@ -1839,6 +1854,51 @@ export function createFishSchool(
   return {
     update,
     fish,
+    // Take one fish out of the tank for good: the live school and the durable record lose
+    // it together, exactly once, keyed by its stable id. Returns false if no such fish is
+    // here (already taken, or never was), so a caller cannot count a catch twice. Live
+    // fish mirror the records by index, so both arrays shift as one, and the render slots
+    // above the gap are rewritten now rather than showing a stale fish for a frame.
+    remove(sid) {
+      const index = fish.findIndex((f) => f.sid === sid);
+      if (index < 0 || state.fish[index]?.id !== sid) return false;
+      const [gone] = fish.splice(index, 1);
+      state.fish.splice(index, 1);
+      const at = initialPositions.indexOf(gone.position);
+      if (at >= 0) initialPositions.splice(at, 1);
+      for (const f of fish) if (f.recruiter === gone) f.recruiter = null;
+      for (let i = index; i < fish.length; i++) {
+        fish[i].id = i;
+        bodies.getMatrixAt(i + 1, instance);
+        bodies.setMatrixAt(i, instance);
+        membranes.setMatrixAt(i, instance);
+        swimAttribute.setXYZW(i, swimAttribute.getX(i + 1), swimAttribute.getY(i + 1),
+          swimAttribute.getZ(i + 1), swimAttribute.getW(i + 1));
+        finPhaseAttribute.setX(i, finPhaseAttribute.getX(i + 1));
+      }
+      bodies.count = fish.length;
+      membranes.count = fish.length;
+      bodies.instanceMatrix.needsUpdate = true;
+      membranes.instanceMatrix.needsUpdate = true;
+      swimAttribute.needsUpdate = true;
+      finPhaseAttribute.needsUpdate = true;
+      taken++;
+      return true;
+    },
+    // Something sudden happened at `point` (a turtle's jaws closing): every fish near it
+    // that can still be startled makes a C-start away, and the usual contagion carries the
+    // alarm on through the shoal. Returns how many fish broke directly.
+    scatter(point, radius = 2.2) {
+      let count = 0;
+      for (const f of fish) {
+        if (f.mode === "escape" || f.pendingEscape || elapsed < f.refractoryUntil) continue;
+        if (f.position.distanceTo(point) > radius) continue;
+        startEscape(f, escapeDirection(f, point, delta));
+        count++;
+      }
+      scatters += count;
+      return count;
+    },
     // The durable population for this tank, as pure data a host can store: each fish's
     // stable id, species key, current running age and remaining breeding cooldown, plus
     // the tank-wide birth cooldown. Everything else in `fish` is render state and never
@@ -1879,6 +1939,8 @@ export function createFishSchool(
         maximumSpeed,
         pointerResponses: startled,
         escapes,
+        scatters,
+        taken,
         foraging,
         strikes,
         bites,

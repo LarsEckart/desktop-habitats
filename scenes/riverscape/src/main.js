@@ -172,20 +172,30 @@ async function start() {
   // file can never stop the aquarium from starting.
   const tankStore = createTankStorage();
   const population = tankStore.initial() ?? createPopulation();
+  // One snapping turtle per tank. A save that already owns a turtle is restored whole, with
+  // its hunger and cooldowns -- no second turtle on restart. A save that predates turtles
+  // (an existing tank, or a fresh population) gets one minted here and the record is folded
+  // into the next save, so the very tank that gained it never gains another. The turtle
+  // hunts (issue 04): a successful snap takes one fish out of the live school and the saved
+  // population in one call, and every snap, hit or miss, scatters the fish around it. The
+  // school is built just below; the hooks only run from inside the frame loop.
+  const turtle = createTurtle(scene, {
+    obstacles: turtleObstacles,
+    // Swimming up for air clears the fish obstacles (trunk and branches included) and the
+    // turtle never lands in a grass bed.
+    swimObstacles: obstacles,
+    beds: plants.thickets,
+    turtle: population.turtle ?? { id: uid() },
+    onCatch: (sid) => fish.remove(sid),
+    onSnap: (snap) => fish.scatter(snap),
+  });
   const fish = createFishSchool(scene, {
     obstacles,
     landmarks,
     thickets: plants.thickets,
     food,
     population,
-  });
-  // One snapping turtle per tank, rest-only for now (issue 03). A save that already owns a
-  // turtle identity is restored whole -- no second turtle on restart. A save that predates
-  // turtles (an existing tank, or a fresh population) gets one minted here and the identity
-  // is folded into the next save, so the very tank that gained it never gains another.
-  const turtle = createTurtle(scene, {
-    obstacles: turtleObstacles,
-    turtle: population.turtle ?? { id: uid() },
+    lure: turtle.lure,
   });
   if (measurements.plants === false) plants.mesh.visible = false;
   const particles = measurements.particles === false ? null :
@@ -446,7 +456,7 @@ async function start() {
       waterTime.value = time;
       food.update(step, time);
       fish.update(step, time, pointer);
-      turtle.update(step);
+      turtle.update(step, fish.fish);
     }
     if (pointer && now - lastPointerTime > 60)
       pointer.velocity.multiplyScalar(Math.exp(-dt * 12));
@@ -493,7 +503,9 @@ async function start() {
     shadowSize: settings.shadowSize,
     shadowHz: Number.isFinite(settings.shadowHz) ? settings.shadowHz : "per-frame",
     renderedFrames, shadowFrames, simulationTime: time, fish: fish.fish.length,
-    turtle: turtle.getState().mode,
+    turtle: {
+      mode: turtle.getState().mode, ...turtle.getState().hunt,
+    },
     drawCalls: renderer.info.render.calls, triangles: renderer.info.render.triangles,
     plants: { ...plants.stats }, loop: loop.state,
   });

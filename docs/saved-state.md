@@ -25,9 +25,15 @@ swimming. Per fish:
   even when its saved running age is tiny, and makes a baby visibly distinct from day one.
 
 The whole tank also carries `breedIn`, the tank-level birth cooldown (one birth per
-cooldown, never more than the population cap of 24), and one optional **turtle** record.
-In v3 that record contains only an opaque `id`. Turtle position, pose, and movement phase
-are live state and are rebuilt on load.
+cooldown, never more than the population cap of 24), and one optional **turtle** record:
+an opaque `id`, `hunger` (0–1), `feedIn` / `retryIn`, the running-second remainders of the
+turtle's after-meal and after-miss cooldowns, and `breathIn`, the remainder until its next
+trip to the surface (issue 04). Like a fish's `breedIn` they
+are remainders, not timestamps, so a restart continues them. Turtle position, pose,
+movement phase, and the hunt phase are live state and are rebuilt on load: a lunge that
+was in the air at save time neither lands nor repeats. A caught fish is removed from the
+`fish` array in the same call that removes it from the live shoal, so it can never be
+saved twice or resurrected.
 
 Everything else — fish position and pose, the pellet being chased — is rebuilt fresh on load. The
 school in `fish.js` adopts a saved population and `snapshotPopulation()` hands the durable
@@ -62,7 +68,11 @@ silver loss.
 v3 adds the optional turtle identity. A valid v1 or v2 save has no turtle; the live scene
 creates one and writes it in the startup save. A valid v3 turtle id is restored as-is.
 A malformed turtle field is dropped without dropping the fish, since the turtle identity
-can be replaced. The v3 writer keeps only `{ id }`; extra future turtle fields are ignored.
+can be replaced. The turtle clocks (`hunger`, `feedIn`, `retryIn`, `breathIn`) are optional on top of
+the id, so an earlier v3 save without them still reads (the live turtle applies its default
+hunger); when present each must be a finite non-negative number or the turtle record is
+dropped the same way. The version stays 3 because an older reader ignores the extra
+fields and cannot misread them. Other extra turtle fields are ignored.
 
 v2 allowed variable restored counts (births) and the growth/breeding fields. A v1 save —
 which always carried the old fixed
@@ -193,7 +203,9 @@ Automated, in CI-style `npm test`:
 - `tests/render-policy.mjs` — the stall rule: a 5 s scheduler gap delivers `dt = 0` while
   normal pacing is preserved.
 - `tests/turtle.mjs` — v3 turtle identity round trips without changing fish; old fish-only
-  records gain one id; the complete turtle pose freezes at `dt = 0`.
+  records gain one id; the complete turtle pose freezes at `dt = 0`; hunger and cooldown
+  remainders round-trip, a save taken mid-lunge reloads at rest without a catch, bad clocks
+  drop only the turtle, and a caught fish leaves the live and saved lists together.
 - `wallpaper/tests/main.swift` (via `wallpaper/tests/run.sh`) — the AppKit-free lifecycle
   helpers: the one-shot `Finish` gate (flush timeout cannot be followed by a stale save)
   and the `LifecycleCoordinator` rebuild/terminate state machine. Gated to macOS by
@@ -241,8 +253,8 @@ app.
 - `src/fish.js` — adopts a population; tracks age; `snapshotPopulation()`.
 - `src/main.js` — loads a population; initial/periodic/lifecycle saves; `habitatSnapshot`.
 - `src/frame-loop.js` — the 100 ms stall rule that never turns a gap into simulated age.
-- `src/turtle-simulation.js` — pure turtle placement, movement, footprint, and pose.
-- `src/turtle.js` — the merged Three.js turtle view; saves only its id.
+- `src/turtle-simulation.js` — pure turtle placement, movement, footprint, pose, and hunt.
+- `src/turtle.js` — the merged Three.js turtle view; saves id, hunger, and cooldowns.
 - `wallpaper/Wallpaper.swift` — `TankStore` (Application Support, display→tank mapping),
   state injection, `tankSave`, stop+snapshot teardown.
 - `wallpaper/Lifecycle.swift` — AppKit-free `Finish` gate and rebuild/terminate machine.

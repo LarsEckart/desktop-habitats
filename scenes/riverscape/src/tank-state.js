@@ -93,12 +93,28 @@ export function roundAge(age) {
   return Math.round(Math.min(Math.max(n, 0), MAX_AGE_SECONDS) * 1000) / 1000;
 }
 
-/** A snapping turtle's durable record. In issue 03 it carries only an opaque identity --
- * nothing a restart needs beyond who this turtle is. Its resting spot and rest/shuffle
- * phase are render state and are intentionally not replayed (a fish's swimming position
- * is not either). Hunger and cooldowns arrive with the hunting issue and extend this. */
-export function turtleRecord(id) {
-  return { id: String(id) };
+// The most hunger a turtle can carry (a fraction), and the longest cooldown remainder a
+// record may claim, so a corrupt value can never become Infinity or NaN in a save.
+export const MAX_TURTLE_COOLDOWN = MAX_AGE_SECONDS;
+
+/** A snapping turtle's durable record: an opaque identity plus its hunting clocks (issue
+ * 04). `hunger` is 0..1; `feedIn` and `retryIn` are the running-second remainders of the
+ * after-meal and after-miss cooldowns (0 means ready), and `breathIn` the remainder until
+ * the next trip to the surface, all continued on reload rather than re-fired. The hunt phase itself is live state and is not saved: a reload lands the turtle
+ * at rest with these clocks, so an interrupted lunge neither lands nor repeats. Its resting
+ * spot and rest/shuffle phase are render state too, as a fish's swimming position is. */
+export function turtleRecord(id, hunger = 0, feedIn = 0, retryIn = 0, breathIn = null) {
+  const clock = (v) => Math.round(Math.min(Math.max(Number(v) || 0, 0), MAX_TURTLE_COOLDOWN) * 1000) / 1000;
+  const record = {
+    id: String(id),
+    hunger: Math.round(Math.min(Math.max(Number(hunger) || 0, 0), 1) * 1000) / 1000,
+    feedIn: clock(feedIn),
+    retryIn: clock(retryIn),
+  };
+  // Running seconds until the next breath. Absent means "unknown": the live turtle draws
+  // a fresh interval rather than surfacing the moment an older save loads.
+  if (breathIn !== null && breathIn !== undefined) record.breathIn = clock(breathIn);
+  return record;
 }
 
 /** A single fish's durable record. `breedIn` is the adult's remaining cooldown in running
@@ -282,14 +298,16 @@ export function validate(value) {
     }
     tankBreedIn = value.breedIn;
   }
-  // The turtle identity is optional: v1/v2 saves and hand-built records carry none, and
-  // the live layer mints one turtle for such a tank (which is how an existing tank gets
-  // its first turtle without ever getting a second one). When a turtle field is present it
-  // must expose a real non-blank id, never coerced. A malformed turtle is deliberately
-  // dropped (turtle: null) rather than refusing the whole save: a turtle is regenerable, and
-  // refusing over a corruption in one field would unfairly throw away every fish. Future
-  // issues extend this record (hunger, cooldowns), so extra turtle fields are ignored here
-  // exactly the way a record's extra fields are.
+  // The turtle is optional: v1/v2 saves and hand-built records carry none, and the live
+  // layer mints one turtle for such a tank (which is how an existing tank gets its first
+  // turtle without ever getting a second one). When a turtle field is present it must
+  // expose a real non-blank id, never coerced. A malformed turtle is deliberately dropped
+  // (turtle: null) rather than refusing the whole save: a turtle is regenerable, and
+  // refusing over a corruption in one field would unfairly throw away every fish. The
+  // hunting clocks (issue 04) are optional on top of the id -- an issue-03 record has none
+  // and reads as a turtle with the default hunger and no cooldown -- and when present each
+  // must be a real finite non-negative number; a bad clock likewise drops only the turtle.
+  // Other extra turtle fields are ignored exactly the way a record's extra fields are.
   let turtle = null;
   if (value.turtle !== undefined && value.turtle !== null) {
     const t = value.turtle;
@@ -300,7 +318,17 @@ export function validate(value) {
       typeof t.id === "string" &&
       t.id.trim()
     ) {
-      turtle = turtleRecord(t.id);
+      const clocks = ["hunger", "feedIn", "retryIn", "breathIn"].map((key) => {
+        if (t[key] === undefined) return null;
+        if (typeof t[key] !== "number" || !Number.isFinite(t[key]) || t[key] < 0) return NaN;
+        return t[key];
+      });
+      if (!clocks.some(Number.isNaN)) {
+        // Absent hunger is "unknown": leave it undefined so the live turtle applies its
+        // own default rather than reading an old save as a turtle that has just eaten.
+        turtle = turtleRecord(t.id, clocks[0] ?? 0, clocks[1] ?? 0, clocks[2] ?? 0, clocks[3]);
+        if (clocks[0] === null) delete turtle.hunger;
+      }
     }
   }
   const state = { version: SAVE_VERSION, breedIn: tankBreedIn, fish };
