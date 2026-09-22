@@ -159,7 +159,8 @@ function tube(points, radiusAt, {
     for (let j = 0; j < radial; j++) {
       const a = i * radial + j, b = i * radial + (j + 1) % radial;
       const c = a + radial, d = b + radial;
-      indices.push(a, c, b, b, c, d);
+      // Face away from the centreline so the skin stays visible from outside.
+      indices.push(a, b, c, b, d, c);
     }
   }
   const geometry = new THREE.BufferGeometry();

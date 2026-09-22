@@ -228,6 +228,37 @@ function verifyLongProductionRun(seed, seconds) {
   assert.deepEqual(sim.getPose(), before, "dt=0 freezes body, articulation, contacts, and timers");
 }
 
+// The neck uses the same tube builder as the tail, limbs, and toes. Its centreline
+// stays at z=0, so faces on either side must point away from that plane. Check both
+// triangle winding (back-face culling) and vertex normals (lighting).
+{
+  const scene = new THREE.Scene();
+  const turtle = createTurtle(scene, { ground: () => 0 });
+  const neck = scene.getObjectByName("Turtle neck");
+  assert.equal(neck.material.side, THREE.FrontSide);
+  const { position, normal } = neck.geometry.attributes;
+  assert.equal(neck.geometry.index, null, "merged neck has consecutive triangle vertices");
+  const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+  const centre = new THREE.Vector3(), face = new THREE.Vector3();
+  let checked = 0;
+  for (let i = 0; i < position.count; i += 3) {
+    a.fromBufferAttribute(position, i);
+    b.fromBufferAttribute(position, i + 1);
+    c.fromBufferAttribute(position, i + 2);
+    centre.copy(a).add(b).add(c).divideScalar(3);
+    // Stay off the caps and the top/bottom where the outward z component is zero.
+    if (centre.x < 0 || centre.x > 0.3 || Math.abs(centre.z) < 0.04) continue;
+    face.crossVectors(b.sub(a), c.sub(a));
+    assert.ok(face.z * centre.z > 0, `neck triangle ${i / 3} faces outward`);
+    for (let j = i; j < i + 3; j++) {
+      assert.ok(normal.getZ(j) * position.getZ(j) > 0, `neck normal ${j} faces outward`);
+    }
+    checked++;
+  }
+  assert.ok(checked > 100, "checked both sides of the neck away from the caps");
+  turtle.dispose();
+}
+
 // Independently project every rendered vertex into turtle-local XZ at all articulation
 // extremes. This test does not ask the simulation whether its own envelope is correct.
 {
