@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 
 register("./three-loader.mjs", import.meta.url);
 const THREE = await import("three");
-const { BOUNDS, COUNT, createFishSchool } = await import("../src/fish.js");
+const { BOUNDS, COUNT: RENDER_CAPACITY, createFishSchool } = await import("../src/fish.js");
+// Keep the original 24-tetra behaviour run stable; mixed-tank checks use the new room.
+const COUNT = 24;
 const { createPopulation } = await import("../src/tank-state.js");
 const { MATURITY_AGE, sizeScale } = await import("../src/breeding.js");
 const { bloodfinTetra } = await import("../src/fish-species.js");
@@ -17,6 +19,7 @@ const STEP = 1 / 60;
 // because those thresholds describe a mature, settled tank. Issue 02 keeps new tanks
 // smaller via the *default* (no-population) path, tested separately in tank-state/tank-save.
 const FULL = () => createPopulation({ count: COUNT, age: MATURITY_AGE });
+assert.ok(RENDER_CAPACITY >= COUNT);
 // The current sweeps, so upstream is not a fixed direction any more: it has to be read
 // off the water where and when each fish is sampled.
 const flow = new THREE.Vector3();
@@ -411,7 +414,7 @@ const capped = createFishSchool(capScene, {
   // The cap-mixing spacing thresholds were tuned on the production seed, so this school
   // pins the exact default seed rather than an arbitrary test seed.
   random: randomGenerator(583137),
-  population: { version: 2, breedIn: 0, fish: MIXED },
+  population: { version: 2, breedIn: 1e9, fish: MIXED },
 });
 assert.equal(capped.fish.length, COUNT, "the capped school holds its full population");
 const fryIds = capped.fish.filter((f) => sizeScale(f.age, f.adult) < 0.9).map((f) => f.id);

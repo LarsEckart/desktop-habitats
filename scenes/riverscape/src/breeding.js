@@ -29,7 +29,7 @@ export const GROWTH_SECONDS = MATURITY_AGE;
 export const PER_FISH_BREED_COOLDOWN = 5400; // running seconds an adult rests after a birth
 export const TANK_BREED_COOLDOWN = 600; // running seconds between any two births
 export const FRESH_COUNT = 8; // fish in a brand-new tank
-export const POPULATION_CAP = 24; // hard population ceiling, shared with the render budget
+export const POPULATION_CAP = 24; // births still stop at the tank's original ceiling
 // A fry is this fraction of adult size at birth and grows steadily to 1 over
 // MATURITY_AGE. Grown smoothly (a smoothstep of growth progress) so the change reads as
 // a slow swelling, not a step.
@@ -110,7 +110,8 @@ export function breedMany(state, dt, options = {}) {
   let parent = null;
   for (const fish of state.fish) {
     const grown = fish.adult === true || fish.age >= matureAge;
-    if (!grown || fish.breedIn > 0) continue;
+    // Keep the solitary gourami solitary; the schooling fish may still have young.
+    if (!grown || fish.breedIn > 0 || fish.species === "honey-gourami") continue;
     if (!parent || fish.age > parent.age) parent = fish;
   }
   if (!parent) return { born: false };

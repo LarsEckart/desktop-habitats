@@ -222,6 +222,7 @@ async function start() {
     thickets: plants.thickets,
     food,
     population,
+    stockNewSpecies: true,
     lure: turtle.lure,
   });
   if (measurements.plants === false) plants.mesh.visible = false;

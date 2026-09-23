@@ -38,22 +38,16 @@ export const DEFAULT_SPECIES = "bloodfin-tetra";
 // A brand-new tank's population. v1 started every tank (and every existing save) at 24;
 // issue 02 starts new tanks smaller and lets the population grow slowly toward the cap.
 export const DEFAULT_COUNT = FRESH_COUNT;
-// The hard population ceiling: how many fish the birth machinery may grow a tank to, and
-// how crowded it may ever be. New tanks grow toward it; existing v1 saves at 24 are
-// already at or above it, so they simply hold steady. A saved file may never claim more
-// than this.
+// A bound on serialized fish data. The live birth cap is separate: an upgraded old
+// tank can hold its existing fish and the new group without losing any saved record.
 export const MAX_SAVED_FISH = 128;
 // The fixed population a v1 (issue 01) save carries: always exactly 24 fish, whatever the
 // current POPULATION_CAP tuning says. v1 needs this history, not the live cap, so that a
 // later tuning change to POPULATION_CAP can never shift what an old file means.
 export const LEGACY_V1_COUNT = 24;
-// The restore/render capacity: how many fish a tank can hold into the renderer and how
-// many a saved file is trusted to claim. It is the larger of the legacy v1 population and
-// the live birth cap, so a future tuning that lowers POPULATION_CAP below LEGACY_V1_COUNT
-// can never orphan an existing 24-fish save (the renderer keeps room for it and the reader
-// still accepts it). Births alone stop at POPULATION_CAP; this ceiling only guarantees a
-// migrated v1 tank keeps every fish it owns and still renders all of them.
-export const CAPACITY = Math.max(LEGACY_V1_COUNT, POPULATION_CAP);
+// Rendering and save room includes the old 24-fish population plus nine corys and one
+// gourami. Births still stop at POPULATION_CAP, even if an upgraded tank has more fish.
+export const CAPACITY = Math.max(LEGACY_V1_COUNT + 10, POPULATION_CAP);
 // The oldest age a saved fish may claim. Clamped on write (roundAge) and enforced on read
 // so a corrupt or hostile value can never become Infinity or NaN in a record. It sits far
 // above any age running time could reach; it exists to keep rounding and validation
@@ -78,7 +72,7 @@ export function uid(now = Date.now()) {
 }
 
 /** The externally visible species keys the reader knows how to render. */
-export const SPECIES_KEYS = Object.freeze([DEFAULT_SPECIES]);
+export const SPECIES_KEYS = Object.freeze([DEFAULT_SPECIES, "pygmy-corydoras", "honey-gourami"]);
 
 // Age is running simulation time in seconds: time that actually passed while this tank
 // was being drawn. It is what the school grows and matures a fish on, and a baby's whole
@@ -332,6 +326,8 @@ export function validate(value) {
     }
   }
   const state = { version: SAVE_VERSION, breedIn: tankBreedIn, fish };
+  // Once stocked, a fish caught by the turtle must not return on the next launch.
+  if (value.stocked === true) state.stocked = true;
   if (turtle) state.turtle = turtle;
   return { ok: true, state };
 }

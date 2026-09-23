@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { groundHeight, randomGenerator, smoothstep } from "./math.js";
 import { flowDirectionAt, shelteredVelocity, thicketAt } from "./water.js";
-import { bloodfinTetra } from "./fish-species.js";
+import { bloodfinTetra, pygmyCory, honeyGourami } from "./fish-species.js";
 import { roundAge, uid, SAVE_VERSION, FRESH_COUNT, CAPACITY } from "./tank-state.js";
 import { sizeScale, MATURITY_AGE, breedMany, TANK_BREED_COOLDOWN } from "./breeding.js";
 
@@ -291,7 +291,7 @@ const STRIKE = {
 // Integrate the spine's tangent, preserving body length. A travelling angular wave
 // builds along the trunk and peduncle; the head counter-moves only slightly.
 const SWIM_GLSL = /* glsl */ `
-  // Part ids come from fish-anatomy.js: 4 and 5 are the pectorals, 1-3, 6 and 12 the other fins.
+  // Part ids come from fish-anatomy.js: 4 and 5 are the pectorals, 1-3, 6 and 12 the other fins; 13 is cory barbels.
   attribute vec4 aSwim; // x: wave phase, y: wave angle, z: turning curvature, w: pectoral brake
   attribute float aFinPhase;
   attribute float aPart;
@@ -318,8 +318,11 @@ const SWIM_GLSL = /* glsl */ `
       // The trailing membrane lags behind the peduncle instead of acting as a paddle.
       p.z += aSwim.y * 0.045 * aFinProgress * aFinProgress
         * sin(aSwim.x - (PIVOT - p.x) * 7.5 - 0.65);
-    } else if ((aPart > 1.5 && aPart < 6.5) || aPart > 11.5) {
+    } else if ((aPart > 1.5 && aPart < 6.5) || (aPart > 11.5 && aPart < 12.5)) {
       p.z += sin(aFinPhase - p.x * 10.0) * aFinProgress * 0.004;
+    } else if (aPart > 12.5) {
+      // The whisker roots stay on the mouth; only their tips feel the water.
+      p.z += sin(aFinPhase * 0.55 + p.z * 12.0) * aFinProgress * aFinProgress * 0.003;
     }
     return p;
   }
@@ -441,6 +444,8 @@ export function createFishSchool(
     // a population is absent or unusable, the school builds a fresh smaller population of
     // adults (see FRESH_COUNT). The population may hold any number of fish up to the cap.
     population = null,
+    // Scene startup opts in; callers testing a plain shoal keep their supplied population.
+    stockNewSpecies = false,
     // The school's own random source, defaulting to a deterministic seeded generator so
     // the same build of the feature reproduces the same swimming run. A test may hand a
     // seeded source here to drive the randomness that exists (turning, targets, feeding
@@ -449,17 +454,13 @@ export function createFishSchool(
     random = randomGenerator(583137),
   } = {},
 ) {
-  // The renderer owns one shared anatomy and material set for every fish, so the school
-  // renders as the species passed in (the default). The per-fish species keys recorded
-  // on the population are kept and saved back unchanged, ready for a later issue that
-  // gives each species its own body; today all fish are the same species.
-  //
+  // Saved species keys select separate mesh batches, each with its own skin and shape.
   // `state` is the durable record the simulation runs on (the authoritative copy of ids,
   // ages, species and cooldowns). Live fish mirror it by array index, so growth and
   // breeding decisions have exactly one home — breeding.js — and a save is always the
   // true record, never a hand-built duplicate.
   const adopted = Array.isArray(population?.fish) && population.fish.length > 0;
-  const state = { breedIn: 0, fish: [] };
+  const state = { breedIn: 0, fish: [], stocked: population?.stocked === true };
   if (adopted) {
     state.breedIn = Math.max(0, Number(population.breedIn) || 0);
     for (const record of population.fish) {
@@ -478,54 +479,54 @@ export function createFishSchool(
     // tank-level cooldown is armed so the first birth is a discovery some minutes in.
     state.breedIn = TANK_BREED_COOLDOWN;
     for (let i = 0; i < FRESH_COUNT; i++) {
-      state.fish.push({
-        id: uid(),
-        species: species.key,
-        age: MATURITY_AGE,
-        breedIn: 0,
-        adult: true,
-      });
+      state.fish.push({ id: uid(), species: species.key, age: MATURITY_AGE, breedIn: 0, adult: true });
     }
   }
-  const { snoutX, standardLength } = species.measurements;
+  // Seed new and saved tanks once. Never displace an existing resident.
+  if (stockNewSpecies && !state.stocked) {
+    for (const [key, count] of [[pygmyCory.key, 9], [honeyGourami.key, 1]]) {
+      if (state.fish.some((f) => f.species === key)) continue;
+      for (let i = 0; i < count && state.fish.length < CAPACITY; i++)
+        state.fish.push({ id: uid(), species: key, age: MATURITY_AGE, breedIn: 0, adult: true });
+    }
+    state.stocked = true;
+  }
   // The school's random source: the seeded `random` parameter (defaults to the deterministic
   // 583137 generator), driving every stochastic choice in this tank -- turning, targets,
   // feeding odds. A caller-supplied seeded source makes a run reproducible for tests.
   const range = (min, max) => min + random() * (max - min);
   const exponential = (mean) => -mean * Math.log(1 - random());
-  const geometry = species.createAnatomy();
-  const swimAttribute = new THREE.InstancedBufferAttribute(
-    new Float32Array(COUNT * 4),
-    4,
-  );
-  const finPhaseAttribute = new THREE.InstancedBufferAttribute(
-    new Float32Array(COUNT), 1,
-  );
-  swimAttribute.setUsage(THREE.DynamicDrawUsage);
-  finPhaseAttribute.setUsage(THREE.DynamicDrawUsage);
-  geometry.body.setAttribute("aSwim", swimAttribute);
-  geometry.fins.setAttribute("aSwim", swimAttribute);
-  geometry.body.setAttribute("aFinPhase", finPhaseAttribute);
-  geometry.fins.setAttribute("aFinPhase", finPhaseAttribute);
-  const { skin: skinMaterial, fins: finMaterial } = species.createMaterials();
-  const depthMaterial = new THREE.MeshDepthMaterial({
-    depthPacking: THREE.RGBADepthPacking,
-  });
-  applySwimming(skinMaterial, species);
-  applySwimming(finMaterial, species);
-  applySwimming(depthMaterial);
-  const bodies = new THREE.InstancedMesh(geometry.body, skinMaterial, COUNT);
-  const membranes = new THREE.InstancedMesh(geometry.fins, finMaterial, COUNT);
-  bodies.name = species.name;
-  membranes.name = "Attached translucent fish fins";
-  bodies.castShadow = true;
-  bodies.receiveShadow = true;
-  bodies.customDepthMaterial = depthMaterial;
-  bodies.frustumCulled = false;
-  membranes.frustumCulled = false;
-  bodies.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-  membranes.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-  scene.add(bodies, membranes);
+  function makeBatch(kind) {
+    const geometry = kind.createAnatomy();
+    const swimAttribute = new THREE.InstancedBufferAttribute(new Float32Array(COUNT * 4), 4);
+    const finPhaseAttribute = new THREE.InstancedBufferAttribute(new Float32Array(COUNT), 1);
+    swimAttribute.setUsage(THREE.DynamicDrawUsage);
+    finPhaseAttribute.setUsage(THREE.DynamicDrawUsage);
+    for (const part of [geometry.body, geometry.fins]) {
+      part.setAttribute("aSwim", swimAttribute);
+      part.setAttribute("aFinPhase", finPhaseAttribute);
+    }
+    const { skin, fins } = kind.createMaterials();
+    const depth = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking });
+    applySwimming(skin, kind);
+    applySwimming(fins, kind);
+    applySwimming(depth);
+    const bodies = new THREE.InstancedMesh(geometry.body, skin, COUNT);
+    const membranes = new THREE.InstancedMesh(geometry.fins, fins, COUNT);
+    bodies.name = kind.name;
+    membranes.name = `${kind.name} fins`;
+    bodies.castShadow = bodies.receiveShadow = true;
+    bodies.customDepthMaterial = depth;
+    bodies.frustumCulled = membranes.frustumCulled = false;
+    bodies.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    membranes.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    bodies.count = membranes.count = 0;
+    scene.add(bodies, membranes);
+    return { kind, geometry, swimAttribute, finPhaseAttribute, skin, fins, depth, bodies, membranes };
+  }
+  const batches = new Map();
+  for (const kind of [species, pygmyCory, honeyGourami])
+    if (!batches.has(kind.key)) batches.set(kind.key, makeBatch(kind));
 
   // Places a fish may go and look at: the hardscape landmarks and spots inside the grass.
   const interests = landmarks.map((landmark) => ({ ...landmark }));
@@ -567,7 +568,7 @@ export function createFishSchool(
       do {
         position.set(
           -5.7 + band * 2.18 + range(-0.45, 0.45),
-          range(2.55, 5.75),
+          speciesKey === pygmyCory.key ? range(0.75, 1.55) : range(2.55, 5.75),
           range(0.42, 2.7),
         );
       } while (
@@ -653,8 +654,6 @@ export function createFishSchool(
   }
   const fish = state.fish.map((record, id) => makeLive(id, record));
   // Only the live count is drawn; the buffers keep room up to the cap.
-  bodies.count = fish.length;
-  membranes.count = fish.length;
   const delta = new THREE.Vector3();
   const target = new THREE.Vector3();
   const desired = new THREE.Vector3();
@@ -747,6 +746,8 @@ export function createFishSchool(
   function travel(f, goal, recruited = false) {
     f.mode = "travel";
     f.goal.copy(goal);
+    if (f.species === pygmyCory.key)
+      f.goal.y = Math.min(BOUNDS.maxY - 0.5, groundHeight(f.goal.x, f.goal.z) + 0.85);
     // Only a fish leaving of its own accord draws others after it; a follower does not
     // start a chain of followers.
     f.departed = recruited ? -Infinity : elapsed;
@@ -805,6 +806,7 @@ export function createFishSchool(
   // along whatever is pulling, or off to a fresh destination.
   function leave(f, leader = null) {
     if (
+      f.species !== pygmyCory.key &&
       interests.length &&
       f.curiosity > 0.55 &&
       random() < f.curiosity * 0.9 &&
@@ -1205,8 +1207,6 @@ export function createFishSchool(
     const live = makeLive(fish.length, child, fish.length, rearing);
     fish.push(live);
     initialPositions.push(live.position);
-    bodies.count = fish.length;
-    membranes.count = fish.length;
   }
 
   function update(dt, time, pointer) {
@@ -1227,6 +1227,7 @@ export function createFishSchool(
       }
       if (result.born) spawnBirth(result.child, fish[state.fish.indexOf(result.parent)]);
     }
+    for (const batch of batches.values()) batch.used = 0;
     waterClock = time;
     // A pellet touching the film is the loudest thing that happens in a quiet tank, and
     // the first thing anyone notices: heads turn across the near half of the water before
@@ -1260,6 +1261,7 @@ export function createFishSchool(
       }
     for (const f of fish) {
       const { position, swim, heading } = f;
+      const { snoutX, standardLength } = (batches.get(f.species) ?? batches.get(species.key)).kind.measurements;
       // How big this fish is right now, as a fraction of adult size. `f.scale` is the
       // individual adult proportion the fish was born with; `f.size` folds in the growth
       // a baby has done so far (a fish that is adult by birth stays 1), so a fry is
@@ -1305,10 +1307,12 @@ export function createFishSchool(
         const d = Math.sqrt(distanceSquared);
         if (heading.dot(delta) < SENSES.blindCosine * d && d > SENSES.lateralLine)
           continue;
-        seen++;
-        centroid.add(other.position);
-        if (other.mode === "travel" || other.mode === "escape")
-          alignment.add(other.swim).sub(swim);
+        if (other.species === f.species && f.species !== honeyGourami.key) {
+          seen++;
+          centroid.add(other.position);
+          if (other.mode === "travel" || other.mode === "escape")
+            alignment.add(other.swim).sub(swim);
+        }
         // Make room before paths cross, while there is still time to turn and coast.
         relativeVelocity.subVectors(other.velocity, f.velocity);
         const approachTime = THREE.MathUtils.clamp(
@@ -1337,6 +1341,7 @@ export function createFishSchool(
           if (clearance < crowding) crowded = true;
         }
         if (
+          other.species === f.species &&
           other.mode === "travel" &&
           !other.interest &&
           d < SHOAL.recruitRange &&
@@ -1819,14 +1824,16 @@ export function createFishSchool(
       f.finBrake = THREE.MathUtils.lerp(f.finBrake, pectorals, 1 - Math.exp(-dt * 6));
       if (f.stroke || flick) f.phase = (f.phase + dt * TAU * frequency) % TAU;
       f.finPhase = (f.finPhase + dt * TAU * (2.1 + f.effort * 1.5)) % TAU;
-      swimAttribute.setXYZW(
-        f.id,
+      const batch = batches.get(f.species) ?? batches.get(species.key);
+      const slot = batch.used++;
+      batch.swimAttribute.setXYZW(
+        slot,
         f.phase,
         f.effort * GAIT.waveAngle,
         -f.bend,
         f.finBrake,
       );
-      finPhaseAttribute.setX(f.id, f.finPhase);
+      batch.finPhaseAttribute.setX(slot, f.finPhase);
 
       axisZ.crossVectors(heading, UP).normalize();
       axisY.crossVectors(axisZ, heading).normalize();
@@ -1839,14 +1846,19 @@ export function createFishSchool(
       targetQuaternion.multiply(bankQuaternion);
       f.quaternion.copy(targetQuaternion);
       scale.setScalar(size);
+      const proportions = batch.kind.proportions;
+      if (proportions) scale.multiply(new THREE.Vector3(...proportions));
       instance.compose(position, f.quaternion, scale);
-      bodies.setMatrixAt(f.id, instance);
-      membranes.setMatrixAt(f.id, instance);
+      batch.bodies.setMatrixAt(slot, instance);
+      batch.membranes.setMatrixAt(slot, instance);
     }
-    bodies.instanceMatrix.needsUpdate = true;
-    membranes.instanceMatrix.needsUpdate = true;
-    swimAttribute.needsUpdate = true;
-    finPhaseAttribute.needsUpdate = true;
+    for (const batch of batches.values()) {
+      batch.bodies.count = batch.membranes.count = batch.used;
+      batch.bodies.instanceMatrix.needsUpdate = true;
+      batch.membranes.instanceMatrix.needsUpdate = true;
+      batch.swimAttribute.needsUpdate = true;
+      batch.finPhaseAttribute.needsUpdate = true;
+    }
   }
 
   for (const f of fish) if (f.id % 4 !== 0) leave(f);
@@ -1867,21 +1879,26 @@ export function createFishSchool(
       const at = initialPositions.indexOf(gone.position);
       if (at >= 0) initialPositions.splice(at, 1);
       for (const f of fish) if (f.recruiter === gone) f.recruiter = null;
-      for (let i = index; i < fish.length; i++) {
-        fish[i].id = i;
-        bodies.getMatrixAt(i + 1, instance);
-        bodies.setMatrixAt(i, instance);
-        membranes.setMatrixAt(i, instance);
-        swimAttribute.setXYZW(i, swimAttribute.getX(i + 1), swimAttribute.getY(i + 1),
-          swimAttribute.getZ(i + 1), swimAttribute.getW(i + 1));
-        finPhaseAttribute.setX(i, finPhaseAttribute.getX(i + 1));
+      for (let i = index; i < fish.length; i++) fish[i].id = i;
+      // Shift just this species' render slots. Running the swim step again here would
+      // change the other fish's choices during a turtle strike.
+      const batch = batches.get(gone.species) ?? batches.get(species.key);
+      const slot = fish.slice(0, index).filter((f) => f.species === gone.species).length;
+      for (let i = slot; i < batch.bodies.count - 1; i++) {
+        batch.bodies.getMatrixAt(i + 1, instance);
+        batch.bodies.setMatrixAt(i, instance);
+        batch.membranes.setMatrixAt(i, instance);
+        batch.swimAttribute.setXYZW(i, batch.swimAttribute.getX(i + 1), batch.swimAttribute.getY(i + 1),
+          batch.swimAttribute.getZ(i + 1), batch.swimAttribute.getW(i + 1));
+        batch.finPhaseAttribute.setX(i, batch.finPhaseAttribute.getX(i + 1));
       }
-      bodies.count = fish.length;
-      membranes.count = fish.length;
-      bodies.instanceMatrix.needsUpdate = true;
-      membranes.instanceMatrix.needsUpdate = true;
-      swimAttribute.needsUpdate = true;
-      finPhaseAttribute.needsUpdate = true;
+      batch.bodies.count--;
+      batch.membranes.count--;
+      batch.used = batch.bodies.count;
+      batch.bodies.instanceMatrix.needsUpdate = true;
+      batch.membranes.instanceMatrix.needsUpdate = true;
+      batch.swimAttribute.needsUpdate = true;
+      batch.finPhaseAttribute.needsUpdate = true;
       taken++;
       return true;
     },
@@ -1908,6 +1925,7 @@ export function createFishSchool(
       return {
         version: SAVE_VERSION,
         breedIn: state.breedIn,
+        ...(state.stocked ? { stocked: true } : {}),
         fish: state.fish.map((r) => ({
           id: r.id,
           species: r.species,
@@ -1948,12 +1966,14 @@ export function createFishSchool(
       };
     },
     dispose() {
-      scene.remove(bodies, membranes);
-      geometry.body.dispose();
-      geometry.fins.dispose();
-      skinMaterial.dispose();
-      finMaterial.dispose();
-      depthMaterial.dispose();
+      for (const batch of batches.values()) {
+        scene.remove(batch.bodies, batch.membranes);
+        batch.geometry.body.dispose();
+        batch.geometry.fins.dispose();
+        batch.skin.dispose();
+        batch.fins.dispose();
+        batch.depth.dispose();
+      }
     },
   };
 }

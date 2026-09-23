@@ -10,6 +10,7 @@ import {
   turtleRecord,
 } from "./tank-state.js";
 import { FRESH_COUNT, MATURITY_AGE, POPULATION_CAP } from "./breeding.js";
+import { CAPACITY } from "./tank-state.js";
 import { HUNT } from "./turtle-simulation.js";
 
 const STORAGE_PREFIX = "desktop-habitats/verification/v1";
@@ -202,10 +203,10 @@ function detailsFor(id, snapshot, runtime) {
     detail,
   });
   add("scenario-loaded", "Scenario fixture loaded", Boolean(snapshot), snapshot ? id : "no fixture");
-  add("durable-population", "Durable population is valid", count > 0 && count <= POPULATION_CAP,
+  add("durable-population", "Durable population is valid", count > 0 && count <= CAPACITY,
     `${count} fish in the parsed durable snapshot`);
-  if (id === "fresh") add("fresh-count", "Fresh tank starts small", count === FRESH_COUNT,
-    `expected ${FRESH_COUNT}, got ${count}`);
+  if (id === "fresh") add("fresh-count", "Fresh tank starts small", count === FRESH_COUNT + 10,
+    `expected ${FRESH_COUNT + 10}, got ${count}`);
   if (id === "legacy-save") {
     add("legacy-count", "Legacy population preserved", count === 24, `expected 24, got ${count}`);
     add("legacy-ids", "Legacy IDs preserved", fish[0]?.id === "legacy-fish-0" && fish[23]?.id === "legacy-fish-23",
@@ -216,8 +217,8 @@ function detailsFor(id, snapshot, runtime) {
     add("baby-present", "Baby remains durable", Boolean(baby), baby ? `age ${baby.age}` : "no baby record");
     add("baby-grows", "Baby age advances", Boolean(baby && baby.age > 0), baby ? `age ${baby.age}` : "not exercised", Boolean(baby && baby.age > 0));
   }
-  if (id === "full-tank") add("population-cap", "Population stays at cap", count === POPULATION_CAP,
-    `expected ${POPULATION_CAP}, got ${count}`);
+  if (id === "full-tank") add("population-cap", "Population stays at cap", count === CAPACITY,
+    `expected ${CAPACITY}, got ${count}`);
   if (id === "turtle-rest") add("turtle-resting", "Turtle is resting", state?.mode === "rest", state?.mode ?? "not exercised", Boolean(state));
   if (id === "turtle-walk") {
     const exercised = (state?.transitions ?? 0) > 0 || state?.mode === "shuffle";
@@ -237,7 +238,7 @@ function detailsFor(id, snapshot, runtime) {
     const exercised = (state?.hunt?.snaps ?? 0) > 0;
     const snap = runtime?.events?.find?.((event) => event.type === "hunt-snap");
     add("hunt-hit", "Real hunt catches prey", hits > 0, `${hits} hit(s)`, exercised);
-    add("catch-reduces-population", "Hit removes exactly one fish", hits === 1 && count === FRESH_COUNT - 1,
+    add("catch-reduces-population", "Hit removes exactly one fish", hits === 1 && count === FRESH_COUNT + 9,
       `${count} fish after ${hits} hit(s)`, exercised);
     add("catch-hunger-cooldown", "Meal lowers hunger and starts a cooldown", turtle?.hunger < 0.2 && turtle?.feedIn > 0,
       `hunger ${turtle?.hunger}, feedIn ${turtle?.feedIn}`, exercised);
@@ -249,7 +250,7 @@ function detailsFor(id, snapshot, runtime) {
     const exercised = (state?.hunt?.snaps ?? 0) > 0;
     const snap = runtime?.events?.find?.((event) => event.type === "hunt-snap");
     add("hunt-miss", "Real hunt misses prey", misses > 0, `${misses} miss(es)`, exercised);
-    add("miss-keeps-prey", "Miss keeps population", count === FRESH_COUNT,
+    add("miss-keeps-prey", "Miss keeps population", count === FRESH_COUNT + 10,
       `${count} fish after ${misses} miss(es)`, exercised);
     add("scatter-visible", "Bystanders scatter on miss", Number(snap?.details?.scattered) > 0,
       snap ? `${snap.details.scattered} fish scattered` : "not exercised", exercised);

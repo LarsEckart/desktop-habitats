@@ -48,7 +48,7 @@ The desktop app supports macOS only. The browser preview needs a browser with We
 
 It uses more power than a still wallpaper because it renders a 3D scene. The amount depends on your Mac, screen resolution and number of displays. There isn't a measured battery-life estimate yet.
 
-The optimized build thins the rear rivergrass by about 30%, reduces oversampling and shadow work, and fully stops the render loop when paused or hidden. It keeps 4× multisampling, the HDR lighting, all 24 fish and the foreground planting. On an M5 Pro this halves the GPU time per frame; battery drain has not been measured.
+The optimized build thins the rear rivergrass by about 30%, reduces oversampling and shadow work, and fully stops the render loop when paused or hidden. It keeps 4× multisampling, the HDR lighting, and the foreground planting. A saved tank may now hold up to 34 fish when the new species join its old residents. On an M5 Pro this halves the GPU time per frame; battery drain has not been measured.
 
 The wallpaper caps visible animation at 30 fps to reduce background work. It renders at 1.25× resolution plugged in and 1.15× on battery, with 4× multisampling for smooth leaf edges, and slows or stops when covered:
 
@@ -139,10 +139,14 @@ Riverscape lives in `scenes/riverscape/`, including its textures and tests. Futu
 
 ### Adding a fish species
 
-`fish-species.js` defines the current bloodfin tetra. A species provides its mesh builder,
-materials, skin-shader hook, name, and body measurements. `createFishSchool()` takes a
-`species` option, so another species can bring its own anatomy and shader while sharing the
-tank, movement, feeding, and cursor interaction.
+`fish-species.js` defines the bloodfin tetra, pygmy corydoras and honey gourami. A species
+provides its mesh builder, materials, skin-shader hook, name and body measurements. The
+school draws each kind in its own batch, while sharing movement, feeding and cursor
+interaction. New tanks start with eight tetras, nine corys and one gourami; old saves
+keep their fish and gain the new kinds once. Corys travel near the sand, and the gourami
+does not breed. They share the tetra swim motion, but the cory has a broad, low head, short fins,
+a compact tail, a dark flank stripe and two pairs of mouth barbels. The gourami has
+a long dorsal fin, an anal skirt and pelvic feelers.
 
 Run the checks with Node.js:
 

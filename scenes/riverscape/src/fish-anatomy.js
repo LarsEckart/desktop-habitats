@@ -18,7 +18,7 @@ import { waterLitShader } from "./water.js";
 // the spine runs along y = 0, z = 0 and the geometry is symmetric in z. Part ids
 // (attribute aPart): 0 body, 1 caudal, 2 dorsal, 3 anal, 4 right pectoral, 5 left
 // pectoral, 6 pelvic, 7 iris, 8 pupil, 9 oral slit, 10 corneal rim, 11 upper lip,
-// 12 adipose. aFinProgress runs 0 at a fin's hinge to 1 at its free edge. The
+// 12 adipose, 13 cory barbels. aFinProgress runs 0 at a fin's hinge to 1 at its free edge. The
 // swimming deformation in fish.js bends this geometry about the vertical axis and
 // supplies vSkinPoint (rest position), vFishUV and vFishPart to the skin shader.
 
@@ -643,7 +643,52 @@ function medianInsertion(from, to, samples, dorsal, sink) {
   return line;
 }
 
-export function makeAnatomy() {
+// A barbel starts in the skin beside the mouth and narrows to a fine tip. Keep it
+// in the opaque batch so it follows the same swim bend and casts a solid silhouette.
+function coryBarbel(points, radius) {
+  const curve = curveThrough(points);
+  const segments = 12;
+  const sides = 6;
+  const geometry = new THREE.TubeGeometry(curve, segments, radius, sides, false);
+  const positions = geometry.getAttribute("position");
+  const progress = [];
+  const centre = new THREE.Vector3();
+  const point = new THREE.Vector3();
+  for (let ring = 0; ring <= segments; ring++) {
+    const t = ring / segments;
+    curve.getPointAt(t, centre);
+    const taper = Math.pow(1 - t, 0.8) * 0.94 + 0.06;
+    for (let side = 0; side <= sides; side++) {
+      const i = ring * (sides + 1) + side;
+      point.fromBufferAttribute(positions, i).sub(centre).multiplyScalar(taper).add(centre);
+      positions.setXYZ(i, point.x, point.y, point.z);
+      progress.push(t);
+    }
+  }
+  geometry.computeVertexNormals();
+  return { geometry, progress };
+}
+
+// Corys have a broad, armored head and a low belly rather than a tetra's narrow,
+// even-sided profile. Shape the whole rig together so the eyes, mouth and barbels
+// remain attached to the skin when the fish swims.
+function shapeCory(geometry) {
+  const positions = geometry.getAttribute("position");
+  for (let i = 0; i < positions.count; i++) {
+    const x = positions.getX(i);
+    const y = positions.getY(i);
+    const z = positions.getZ(i);
+    const head = THREE.MathUtils.smoothstep(x, 0.09, 0.32);
+    const tail = 1 - THREE.MathUtils.smoothstep(x, -0.23, 0.04);
+    const underside = y < 0 ? y * (0.75 + 0.14 * head) : y * (1.08 - 0.20 * tail);
+    positions.setXYZ(i, x, underside - head * 0.018, z * (1 + 0.32 * head - 0.12 * tail));
+  }
+  positions.needsUpdate = true;
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
+export function makeAnatomy({ gourami = false, cory = false } = {}) {
   const opaque = geometryBuilder();
   const membranes = geometryBuilder();
   opaque.add(bodyGeometry(), 0);
@@ -654,11 +699,45 @@ export function makeAnatomy() {
     opaque.add(eyeCap(side, EYE.iris, EYE.rim, 2, 30, 0.0004, 0.0013), 10);
     opaque.add(cleftRibbon(side, -0.0016, 0.0016, -0.001, 7), 9);
     opaque.add(cleftRibbon(side, 0.0022, 0.005, 0.0005, 7), 11);
+    if (cory) {
+      // The outer pair sweeps out from the mouth corners; the shorter inner pair
+      // points down toward the sand. Both sides stay clear of the eye and fins.
+      for (const [points, radius] of [
+        [[[0.324, -0.026], [0.346, -0.042], [0.370, -0.064]], 0.0025],
+        [[[0.316, -0.036], [0.329, -0.055], [0.344, -0.076]], 0.0019],
+      ]) {
+        const root = surfaceAt(points[0][0], points[0][1], side);
+        const barbel = coryBarbel([
+          root.toArray(),
+          [points[1][0], points[1][1], side * (Math.abs(root.z) + 0.013)],
+          [points[2][0], points[2][1], side * (Math.abs(root.z) + 0.034)],
+        ], radius);
+        opaque.add(barbel.geometry, 13, barbel.progress);
+      }
+    }
   }
 
+  // Corys have a compact tail with a shallow notch instead of a tetra's long fork.
+  if (cory) finFan(
+    {
+      part: 1,
+      base: [
+        [-0.273, 0.032, 0], [-0.29, 0, 0], [-0.273, -0.031, 0],
+      ],
+      tip: [
+        [-0.36, 0.068, 0], [-0.396, 0.074, 0],
+        [-0.38, 0.025, 0], [-0.365, 0, 0],
+        [-0.38, -0.025, 0], [-0.396, -0.074, 0],
+        [-0.36, -0.068, 0],
+      ],
+      edge: 0.018,
+      root: 0.014,
+    },
+    membranes,
+  );
   // Caudal fin: 19 principal rays fanning from the hypural plate into two rounded
   // lobes, the median rays a third of the lobe length so the fork stays deep.
-  finFan(
+  else finFan(
     {
       part: 1,
       base: [
@@ -689,9 +768,34 @@ export function makeAnatomy() {
     membranes,
   );
 
-  // Dorsal fin at 52% SL: a short base, the apex over the third ray, the margin
-  // falling away concavely behind it.
-  finFan(
+  // The cory's leading dorsal spine rises over the shoulder, with a short base.
+  if (cory) finFan(
+    {
+      part: 2,
+      base: medianInsertion(0.09, -0.035, 6, true, 0.006),
+      tip: [
+        [0.09, 0.105, 0], [0.07, 0.162, 0], [0.045, 0.18, 0],
+        [0.018, 0.151, 0], [-0.015, 0.11, 0], [-0.035, 0.093, 0],
+      ],
+      edge: 0.016,
+    },
+    membranes,
+  );
+  // A gourami's dorsal runs much further along the back than the tetra's short sail.
+  else if (gourami) finFan(
+    {
+      part: 2,
+      base: medianInsertion(0.11, -0.205, 12, true, 0.006),
+      tip: [
+        [0.11, 0.094, 0], [0.075, 0.125, 0], [0.028, 0.15, 0],
+        [-0.04, 0.162, 0], [-0.11, 0.165, 0], [-0.165, 0.184, 0],
+        [-0.205, 0.142, 0],
+      ],
+      edge: 0.012,
+    },
+    membranes,
+  );
+  else finFan(
     {
       part: 2,
       base: medianInsertion(0.015, -0.056, 4, true, 0.006),
@@ -709,8 +813,34 @@ export function makeAnatomy() {
     membranes,
   );
 
-  // Anal fin: the long, low, falcate base that marks the genus.
-  finFan(
+  // A cory's short anal fin sits close to the tail, not along the belly.
+  if (cory) finFan(
+    {
+      part: 3,
+      base: medianInsertion(-0.16, -0.235, 5, false, 0.005),
+      tip: [
+        [-0.16, -0.087, 0], [-0.18, -0.11, 0],
+        [-0.215, -0.099, 0], [-0.235, -0.065, 0],
+      ],
+      edge: 0.016,
+    },
+    membranes,
+  );
+  // The gourami's anal fin is a broad skirt from behind the belly to the tail.
+  else if (gourami) finFan(
+    {
+      part: 3,
+      base: medianInsertion(0.11, -0.27, 14, false, 0.006),
+      tip: [
+        [0.105, -0.12, 0], [0.07, -0.154, 0], [0.01, -0.174, 0],
+        [-0.06, -0.182, 0], [-0.13, -0.18, 0], [-0.2, -0.19, 0],
+        [-0.265, -0.152, 0],
+      ],
+      edge: 0.012,
+    },
+    membranes,
+  );
+  else finFan(
     {
       part: 3,
       base: medianInsertion(-0.04, -0.205, 6, false, 0.006),
@@ -729,8 +859,8 @@ export function makeAnatomy() {
     membranes,
   );
 
-  // Adipose fin at 84% SL: a small rayless flap of skin, red in this species.
-  finFan(
+  // Gouramis have no adipose fin; keep it only on the tetra-shaped rig.
+  if (!gourami) finFan(
     {
       part: 12,
       base: medianInsertion(-0.178, -0.206, 3, true, 0.004),
@@ -774,8 +904,16 @@ export function makeAnatomy() {
       },
       membranes,
     );
-    // Pelvics at 46% SL, close to the ventral midline.
-    finFan(
+    // Gourami pelvic fins have become a pair of long, threadlike feelers.
+    if (gourami) {
+      const feeler = new THREE.TubeGeometry(curveThrough([
+        [0.135, -0.077, side * 0.018],
+        [0.127, -0.14, side * 0.035],
+        [0.095, -0.225, side * 0.065],
+        [0.045, -0.31, side * 0.095],
+      ]), 18, 0.0018, 5, false);
+      opaque.add(feeler, 6);
+    } else finFan(
       {
         part: 6,
         base: insertion(
@@ -801,7 +939,9 @@ export function makeAnatomy() {
     );
   }
 
-  return { body: opaque.finish(), fins: membranes.finish() };
+  const body = opaque.finish();
+  const fins = membranes.finish();
+  return cory ? { body: shapeCory(body), fins: shapeCory(fins) } : { body, fins };
 }
 
 // Colour, scales, guanine sheen and fin membranes in the fragment stage. The vertex
@@ -1013,7 +1153,10 @@ export function applySkin(shader) {
           * (1.0 - fishAxialShadow(fishX, fishY));
         gFishThrough = fishThrough(path, vec3(0.0)) * wall
           + vec3(0.24, 0.055, 0.038) * gill;
-      } else if (vFishPart < 6.5 || vFishPart > 11.5) {
+      } else if (vFishPart > 12.5) {
+        // Short, fleshy sensory whiskers, not transparent fin membranes.
+        diffuseColor.rgb = mix(vec3(0.27, 0.23, 0.16), vec3(0.47, 0.39, 0.27), vFishUV.x);
+      } else if (vFishPart < 6.5 || (vFishPart > 11.5 && vFishPart < 12.5)) {
         float caudal = 1.0 - step(1.5, vFishPart);
         float pectoral = step(3.5, vFishPart) * (1.0 - step(5.5, vFishPart));
         float paleTip = step(2.5, vFishPart) * (1.0 - step(3.5, vFishPart))
@@ -1095,7 +1238,7 @@ export function applySkin(shader) {
         metalnessFactor *= 1.0 - 0.85 * smoothstep(0.88, 1.06, fishOrbit());
       } else if (vFishPart > 6.5 && vFishPart < 7.5) {
         metalnessFactor = 0.20;
-      } else if (vFishPart < 6.5 || vFishPart > 11.5) {
+      } else if (vFishPart < 6.5 || (vFishPart > 11.5 && vFishPart < 12.5)) {
         metalnessFactor = 0.05;
       } else {
         metalnessFactor = 0.0;
