@@ -9,8 +9,7 @@ import { createFrameLoop } from "./frame-loop.js";
 import { renderSettings, framebufferSize } from "./render-policy.js";
 import { measurementOptions, measurementSettings } from "./measurement-options.js";
 import { createTankStorage } from "./tank-storage.js";
-import { createPopulation, serialize, uid } from "./tank-state.js";
-import { createTurtle } from "./turtle.js";
+import { createPopulation, serialize } from "./tank-state.js";
 
 const canvas = document.querySelector("#scene");
 const habitat = document.querySelector("#habitat");
@@ -174,7 +173,7 @@ async function start() {
   backboard.position.set(0, 7, -7.2);
   backboard.receiveShadow = true;
   scene.add(backboard);
-  const { obstacles, turtleObstacles, landmarks } = await createEnvironment(scene);
+  const { obstacles, landmarks } = await createEnvironment(scene);
   const plants = createPlants(scene, {
     ...settings, animatedShadows: profile !== "reference",
   });
@@ -187,34 +186,6 @@ async function start() {
   const population = verification
     ? verification.load() ?? verification.fixture
     : tankStore.initial() ?? createPopulation();
-  // One snapping turtle per tank. A save that already owns a turtle is restored whole, with
-  // its hunger and cooldowns -- no second turtle on restart. A save that predates turtles
-  // (an existing tank, or a fresh population) gets one minted here and the record is folded
-  // into the next save, so the very tank that gained it never gains another. The turtle
-  // hunts (issue 04): a successful snap takes one fish out of the live school and the saved
-  // population in one call, and every snap, hit or miss, scatters the fish around it. The
-  // school is built just below; the hooks only run from inside the frame loop.
-  const turtle = createTurtle(scene, {
-    obstacles: turtleObstacles,
-    random: verification ? randomGenerator(verification.seed + 1) : randomGenerator(791913),
-    options: verification?.options,
-    // Swimming up for air clears the fish obstacles (trunk and branches included) and the
-    // turtle never lands in a grass bed.
-    swimObstacles: obstacles,
-    beds: plants.thickets,
-    turtle: population.turtle ?? {
-      id: verification ? `verify-${verification.scenario}-turtle` : uid(),
-    },
-    onCatch: (sid) => {
-      const removed = fish.remove(sid);
-      if (verification) verification.record(time, "hunt-catch", { preyId: sid, removed });
-      return removed;
-    },
-    onSnap: (snap) => {
-      const scattered = fish.scatter(snap);
-      if (verification) verification.record(time, "hunt-snap", { ...snap, scattered });
-    },
-  });
   const fish = createFishSchool(scene, {
     obstacles,
     random: verification ? randomGenerator(verification.seed) : randomGenerator(583137),
@@ -223,7 +194,6 @@ async function start() {
     food,
     population,
     stockNewSpecies: true,
-    lure: turtle.lure,
   });
   if (measurements.plants === false) plants.mesh.visible = false;
   const particles = measurements.particles === false ? null :
@@ -418,14 +388,10 @@ async function start() {
   // the next save point.
   const SAVE_INTERVAL_MS = 60_000; // tuning: how much running age a crash may lose
   let lastSave = -Infinity;
-  // The durable tank record: the fish population plus the single turtle identity, folded
-  // together so one save is atomic and a restart restores both (issue 01 + 03). Building it
-  // from the school's and turtle's snapshots means a save can never drift from what the
-  // simulation actually decided, exactly once per save.
+  // The durable tank record is the school's own snapshot of its population, so a save can
+  // never drift from what the simulation actually decided, exactly once per save.
   function snapshotTank() {
-    const population = fish.snapshotPopulation();
-    population.turtle = turtle.snapshot();
-    return population;
+    return fish.snapshotPopulation();
   }
   function persist() {
     let ok = false;
@@ -454,14 +420,11 @@ async function start() {
   if (verification) {
     verification.bind({
       snapshot: snapshotTank,
-      turtleState: turtle.getState(),
       stats: () => window.habitatStats?.() ?? {},
       telemetry: () => fish.getTelemetry?.() ?? {},
       paused: () => loop?.state.paused ?? paused,
       simulationTime: () => time,
     });
-    verification.prepareScene({ fish, turtle });
-    // Fixture placement changes live fish positions after the school's build-time update.
     // Refresh instance matrices at dt=0 so a paused verification page is immediately visible.
     fish.update(0, 0, null);
   }
@@ -502,14 +465,7 @@ async function start() {
       waterTime.value = time;
       food.update(step, time);
       fish.update(step, time, pointer);
-      if (verification) {
-        verification.observeFish(time, fish);
-        verification.beforeTurtleUpdate({ simulationTime: time, fish, turtle });
-        turtle.update(step, fish.fish);
-        verification.observeTurtle(time, turtle);
-      } else {
-        turtle.update(step, fish.fish);
-      }
+      if (verification) verification.observeFish(time, fish);
     }
     if (pointer && now - lastPointerTime > 60)
       pointer.velocity.multiplyScalar(Math.exp(-dt * 12));
@@ -590,9 +546,6 @@ async function start() {
     shadowSize: settings.shadowSize,
     shadowHz: Number.isFinite(settings.shadowHz) ? settings.shadowHz : "per-frame",
     renderedFrames, shadowFrames, simulationTime: time, fish: fish.fish.length,
-    turtle: {
-      mode: turtle.getState().mode, ...turtle.getState().hunt,
-    },
     drawCalls: renderer.info.render.calls, triangles: renderer.info.render.triangles,
     plants: { ...plants.stats }, loop: loop.state,
   });

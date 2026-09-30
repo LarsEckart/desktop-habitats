@@ -8,8 +8,6 @@ const checklist = JSON.parse(await readFile(new URL('docs/verification-checklist
 const issues = [
   'issue-01-fish-state-and-saving.md',
   'issue-02-babies-and-growth.md',
-  'issue-03-snapping-turtle.md',
-  'issue-04-turtle-hunting-and-balance.md',
 ];
 const methods = new Set(['automated', 'browser', 'native', 'judgment']);
 const ids = new Set();
@@ -38,4 +36,4 @@ for (const row of checklist.checks) {
 for (const row of checklist.checks) {
   if (row.supersededBy) assert.ok(ids.has(row.supersededBy), `staged replacement: ${row.id}`);
 }
-console.log(`PASS: ${ids.size} acceptance rows cover all four issue docs; source/test links and review states are valid`);
+console.log(`PASS: ${ids.size} acceptance rows cover both issue docs; source/test links and review states are valid`);

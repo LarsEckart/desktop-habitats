@@ -66,8 +66,7 @@ export function groundHeight(x, z) {
   );
 }
 
-// The rendered sand adds a fine fixed ripple to the broad riverbed shape. Turtle contact
-// sampling uses this same function, so it follows the surface that is actually drawn.
+// The rendered sand adds a fine fixed ripple to the broad riverbed shape.
 export function sandHeight(x, z) {
   return groundHeight(x, z) + 0.008 * noise(x * 40, 0, z * 40);
 }

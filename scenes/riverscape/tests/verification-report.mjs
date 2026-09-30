@@ -27,8 +27,8 @@ assert.ok(!html.includes('</script><script>alert(1)</script>'), 'report data is 
 assert.match(html, /Acceptance coverage/);
 assert.match(html, /Looks right/);
 const checklist = await readChecklist(fileURLToPath(new URL('../../../docs/verification-checklist.json', import.meta.url)));
-assert.equal(checklist.length, 36, 'the report loads all acceptance checks from docs/verification-checklist.json');
-assert.equal(checklist.find(row => row.id === '04-12')?.method, 'judgment');
+assert.equal(checklist.length, 16, 'the report loads all acceptance checks from docs/verification-checklist.json');
+assert.equal(checklist.find(row => row.id === '02-09')?.method, 'judgment');
 assert.match(html, /normal-speed recording/);
 assert.match(html, /Open full-size screenshot/);
 assert.match(html, /Open clip/);
@@ -48,9 +48,9 @@ assert.deepEqual(withFeedback(report, feedback).feedback, { fresh: feedback.fres
 // Runner helpers are pure and safe to use in headless tests.
 assert.equal(makeSafeRunId('  run with spaces  '), 'run-with-spaces');
 assert.throws(() => makeSafeRunId('---'), /safe character/);
-const url = scenarioUrl('http://127.0.0.1:8080', { scenario: 'hunt-hit', seed: 42, run: 'unit-run' });
+const url = scenarioUrl('http://127.0.0.1:8080', { scenario: 'growth', seed: 42, run: 'unit-run' });
 assert.equal(new URL(url).searchParams.get('verify'), '1');
-assert.equal(new URL(url).searchParams.get('scenario'), 'hunt-hit');
+assert.equal(new URL(url).searchParams.get('scenario'), 'growth');
 assert.equal(new URL(url).searchParams.get('seed'), '42');
 assert.equal(new URL(url).searchParams.get('run'), 'unit-run');
 assert.equal(equalJson({ b: 2, a: 1 }, { a: 1, b: 2 }), true);
@@ -70,14 +70,14 @@ assert.equal(successful.find(a => a.id === 'normal-storage-isolation').status, '
 assert.equal(successful.find(a => a.id === 'rendered-before-screenshot').status, 'passed');
 assert.equal(durableSnapshotEqual({ fish: [{ id: 'a', age: 1.0004 }] }, { fish: [{ id: 'a', age: 1 }] }), true);
 assert.equal(durableSnapshotEqual({ fish: [{ id: 'a', age: 1 }] }, { fish: [{ id: 'a', age: 1.5 }] }), false);
-assert.equal(durableSnapshotEqual({ turtle: { hunger: 0.15 } }, { turtle: { hunger: 1 } }), false, 'a hunger reset must fail reload verification');
+assert.equal(durableSnapshotEqual({ breedIn: 0.15 }, { breedIn: 1 }), false, 'a cooldown reset must fail reload verification');
 const unsupported = makeScenarioAssertions({ apiReady: true, listed: true, initial: { simulationTime: 0, snapshot: {} }, paused: { paused: true }, stepped: { simulationTime: 0.05 }, still: { simulationTime: 0.05 }, played: { simulationTime: 0.1 }, beforeReload: { snapshot: {} }, afterReload: { snapshot: {} }, recording: { supported: false, reason: 'unsupported' }, normalStorageBefore: { value: null }, normalStorageAfter: { value: null }, screenshotsReady: { fresh: true, final: true } });
 assert.equal(unsupported.find(a => a.id === 'recording').status, 'not-exercised');
 assert.equal(overallStatus(unsupported), 'needs-judgment');
 const failed = makeScenarioAssertions({ contextErrors: ['boom'], timeout: true });
 assert.equal(overallStatus(failed), 'failed');
 
-const parsed = parseArgs(['--smoke', '--run', 'test-run', '--scenario', 'fresh,hunt-hit', '--no-video']);
+const parsed = parseArgs(['--smoke', '--run', 'test-run', '--scenario', 'fresh,growth', '--no-video']);
 assert.deepEqual(parsed.scenarios, ['fresh']);
 assert.equal(parsed.noVideo, true);
 assert.equal(parsed.run, 'test-run');

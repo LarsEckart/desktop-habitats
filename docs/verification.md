@@ -1,10 +1,10 @@
 # Verification workbench
 
-The four features have implementations. That is not the same as accepting every behavior.
+The two features (fish state and saving, babies and growth) have implementations. That is not the same as accepting every behavior.
 This workbench gives us repeatable conditions, real-render evidence, and a short review
 for the parts a test cannot judge.
 
-The [acceptance map](verification-checklist.json) covers all 36 checks in the four issue
+The [acceptance map](verification-checklist.json) covers all 16 checks in the two issue
 docs. It is a work list, not a record of passing tests. Evidence belongs to a particular
 source revision, run, and environment. Leave checks open until the evidence supports them.
 
@@ -16,8 +16,8 @@ Use Node 22+ and an installed Chrome/Chromium. No npm install is needed.
 # Unit/integration tests and Swift typechecks, with saved logs and provenance.
 npm run verify:checks
 
-# The short first review: real hunt hit and miss, state checks, screenshots and video.
-npm run verify:hunts
+# The short first review: the stocked fresh tank and growth, with state checks, screenshots and video.
+npm run verify -- --scenario fresh,growth --duration 6000
 
 # All named scenarios, with optional automated-check evidence attached.
 npm run verify -- --checks verification-artifacts/checks/verification-checks.json
@@ -41,11 +41,11 @@ Useful runner options:
 ```sh
 node tools/verification/run.mjs --help
 node tools/verification/run.mjs --start --headful \
-  --scenario hunt-hit,hunt-miss --seed 42 --duration 6000 --out verification-artifacts/my-review
+  --scenario fresh,growth --seed 42 --duration 6000 --out verification-artifacts/my-review
 ```
 
 `--no-video` can help diagnose recording support, but does not count as visual evidence.
-A smoke run is not acceptance of all four features. Failure to load, assertion failures,
+A smoke run is not acceptance of both features. Failure to load, assertion failures,
 and page errors must remain visible rather than becoming a green report.
 
 ## Detect a test browser left running
@@ -72,7 +72,7 @@ The new runner must also clean up after normal completion, failure, Ctrl+C and t
 Start `npm start`, then open:
 
 ```text
-http://127.0.0.1:8080/scenes/riverscape/index.html?diagnostics=1&verify=1&scenario=hunt-hit&seed=42&run=manual
+http://127.0.0.1:8080/scenes/riverscape/index.html?diagnostics=1&verify=1&scenario=growth&seed=42&run=manual
 ```
 
 Both `diagnostics=1` and `verify=1` are required. Normal preview and wallpaper pages do
@@ -86,25 +86,18 @@ step, reset, save, and reload.
 
 Verification saves use their own namespace, including scenario, seed, and run ID. They
 must never read, overwrite, or clear normal browser saves or a wallpaper host's tank.
-A scenario prepares conditions; the real school and turtle code still resolve behavior.
-Deliberate stimuli, such as moving prey to cause a miss, appear in the event log and
-metadata. Such clips prove behavior under prepared conditions, not natural event frequency.
+A scenario prepares conditions; the real school code still resolves behavior. Prepared
+conditions appear in the event log and metadata. Such clips prove behavior under prepared
+conditions, not natural event frequency.
 
 ### Named scenarios
 
 | Scenario | Purpose |
 | --- | --- |
-| `fresh` | New population and a single turtle |
+| `fresh` | New population with all four species stocked once |
 | `legacy-save` | Older save migration without losing fish |
 | `growth` | Baby growth state and size compared with adults |
-| `full-tank` | Population cap, crowding, and a timing workload |
-| `turtle-rest` | Shape and idle head motion |
-| `turtle-walk` | Movement, gait, and ground contact |
-| `turtle-breathe` | Rise, surface breath, and glide |
-| `hunt-hit` | Tracking, strike, exactly one catch, hunger and cooldown |
-| `hunt-miss` | Miss, retry delay, and scatter |
-| `prey-loss` | Safe resolution when the selected prey disappears |
-| `minimum-population` | No hunt below the protected floor |
+| `full-tank` | Render capacity, crowding, and a timing workload |
 
 The public development API is `habitatVerification`: `list`, `state`, `pause`, `play`,
 `step`, `reset`, `save`, `reload`, and `export`. `state()` contains the durable snapshot,
@@ -125,7 +118,7 @@ Visual approval does not overwrite failed automated checks.
 Ask Lars about shape, motion, clarity, clipping, crowding, and pacing. Do not ask him to
 count fish IDs or judge a cooldown from a clip when we can assert it directly.
 
-A short prepared clip cannot establish that births and hunts feel rare over an hour.
+A short prepared clip cannot establish that births feel rare over an hour.
 Use the production-timing multi-seed tests for bounds, and a separate long observation
 for that pacing judgment. Label accelerated demonstrations as accelerated.
 
@@ -171,12 +164,12 @@ host lifecycle tests. Fixture storage intentionally bypasses host tank writes an
 prove the native save bridge.
 
 1. **Quit/relaunch:** export state, quit cleanly, relaunch and export again. Compare display
-   identity, tank ID, fish IDs, turtle ID, age, and cooldowns. Allow only actual running time.
+   identity, tank ID, fish IDs, age, and cooldowns. Allow only actual running time.
 2. **Two displays:** give each dev tank distinct records; check both mappings and snapshots.
    Quit/relaunch, then unplug/replug one display. Its tank must return without changing the
    other. One screen or mocked IDs cannot pass this check.
 3. **Pause and coverage:** observe the real host stop, export twice across a wall-clock wait,
-   and verify simulation time, age, hunger and breeding clocks stay still. Resume and check
+   and verify simulation time, age and breeding clocks stay still. Resume and check
    that only new running time advances. Windowed-mode behavior is not proof of desktop coverage.
 4. **Sleep/wake, screen lock, and Low Power Mode:** exercise each actual system event. Check
    the stop/resume state, saved clocks and lack of catch-up. If we cannot trigger an event
@@ -204,7 +197,6 @@ not frame-time measurements. An uncaptured paced browser run is not a battery-li
 a native WKWebView benchmark. Timing needs a recorded workload, target rate and environment;
 added cost also needs a comparable baseline.
 
-Two original acceptance lines describe intermediate development stages: issue 01's old
-starting count was replaced by issue 02's smaller tank; issue 03's “does not hunt yet” was
-replaced by issue 04's hunting. The acceptance map records those replacements rather than
-pretending the finished product must satisfy contradictory rules.
+One original acceptance line describes an intermediate development stage: issue 01's old
+starting count was replaced by issue 02's smaller tank. The acceptance map records that
+replacement rather than pretending the finished product must satisfy contradictory rules.

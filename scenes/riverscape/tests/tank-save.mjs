@@ -88,10 +88,12 @@ const legacySchool = createFishSchool(new THREE.Scene(), { population: migrated 
 assert.equal(legacySchool.fish.length, 24, "the school adopts a migrated 24-fish tank");
 assert.equal(legacySchool.snapshotPopulation().version, SAVE_VERSION);
 assert.equal(legacySchool.snapshotPopulation().fish.length, 24, "no duplicate fish on the migrated save");
-// A migrated tank remains at the birth cap, even though the renderer has more room.
-assert.equal(legacySchool.fish.length, POPULATION_CAP);
+// A migrated tank sits under the raised birth cap, so its ready adults may breed, but a
+// step can never carry it past the cap.
+assert.ok(legacySchool.fish.length < POPULATION_CAP, "a migrated 24-fish tank has room to breed");
 legacySchool.update(STEP, 0, null);
-assert.equal(legacySchool.fish.length, 24, "a migrated tank cannot exceed the birth cap");
+assert.ok(legacySchool.fish.length >= 24 && legacySchool.fish.length <= POPULATION_CAP,
+  "a migrated tank keeps its fish and cannot exceed the birth cap");
 legacySchool.dispose();
 
 // ---------- Births grow a tank over running time and a save captures the baby ---------

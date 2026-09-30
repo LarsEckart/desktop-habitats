@@ -20,6 +20,7 @@ import {
   MAX_AGE_SECONDS,
   LEGACY_V1_COUNT,
   CAPACITY,
+  STOCKED_COUNT,
 } from "../src/tank-state.js";
 import {
   FRESH_COUNT,
@@ -82,7 +83,7 @@ assert.deepEqual(migrated.state.fish.map((r) => r.age), Array.from({ length: 24 
 assert.equal(migrated.state.fish.length, 24, "migration keeps the saved count");
 assert.ok(migrated.state.fish.every((r) => r.species === DEFAULT_SPECIES));
 // The expanded cap leaves room for new species without dropping legacy residents.
-assert.ok(migrated.state.fish.length + 10 <= CAPACITY);
+assert.ok(migrated.state.fish.length + STOCKED_COUNT <= CAPACITY);
 assert.ok(CAPACITY >= LEGACY_V1_COUNT, "capacity always spans the legacy v1 population");
 assert.ok(CAPACITY >= POPULATION_CAP, "capacity always spans the live birth cap");
 assert.equal(migrated.state.breedIn, 0, "migrated tanks have no armed birth cooldown");
@@ -98,7 +99,7 @@ assert.deepEqual(parse(serialize(migratedSnapshot)), migratedSnapshot);
 // live cap), while the *birth* machinery alone still stops at its own cap. Simulate the
 // lowered-cap world by driving breedMany with an explicit small cap on the migrated tank.
 const legacy24 = () => validate(compactV1()).state; // 24 migrated fish, exactly CAPACITY's floor
-assert.equal(CAPACITY, Math.max(LEGACY_V1_COUNT + 10, POPULATION_CAP));
+assert.equal(CAPACITY, Math.max(LEGACY_V1_COUNT + STOCKED_COUNT, POPULATION_CAP));
 // A migrated 24-fish tank always serializes to v2 and parses back, whatever the live cap
 // is: validation keys off CAPACITY, which spans the legacy count even when a future
 // tuning (simulated below by an explicit lower cap) is smaller.

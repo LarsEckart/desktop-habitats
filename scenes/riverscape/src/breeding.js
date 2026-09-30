@@ -21,15 +21,18 @@
 // wall time), stays small and visibly separate while it grows, and only becomes
 // eligible to breed once it actually is adult. The tank allows one birth per ten minutes
 // of running time, and an adult that has bred cools down for an hour and a half before
-// it can do so again. New tanks start with FRESH_COUNT adults and grow toward
-// POPULATION_CAP, which is also the render budget (it matches the tank's previous fixed
-// population, so the illustrated frame cost of a full tank is unchanged).
+// it can do so again. New tanks start with FRESH_COUNT tetras plus the stocked groups
+// (24 fish in all) and grow toward POPULATION_CAP, which leaves a fresh tank room for a
+// handful of births; the render room (CAPACITY in tank-state.js) is sized separately so
+// an upgraded old tank keeps every fish it already had.
 export const MATURITY_AGE = 5400; // running seconds to reach adult size and breeding age
 export const GROWTH_SECONDS = MATURITY_AGE;
 export const PER_FISH_BREED_COOLDOWN = 5400; // running seconds an adult rests after a birth
 export const TANK_BREED_COOLDOWN = 600; // running seconds between any two births
-export const FRESH_COUNT = 8; // fish in a brand-new tank
-export const POPULATION_CAP = 24; // births still stop at the tank's original ceiling
+export const FRESH_COUNT = 8; // tetras in a brand-new tank, before the stocked groups
+// Species that never sire a baby here, however mature and rested they are.
+export const NON_BREEDING = new Set(["honey-gourami", "marbled-hatchetfish"]);
+export const POPULATION_CAP = 30; // births stop here, whatever a tank was stocked with
 // A fry is this fraction of adult size at birth and grows steadily to 1 over
 // MATURITY_AGE. Grown smoothly (a smoothstep of growth progress) so the change reads as
 // a slow swelling, not a step.
@@ -110,8 +113,9 @@ export function breedMany(state, dt, options = {}) {
   let parent = null;
   for (const fish of state.fish) {
     const grown = fish.adult === true || fish.age >= matureAge;
-    // Keep the solitary gourami solitary; the schooling fish may still have young.
-    if (!grown || fish.breedIn > 0 || fish.species === "honey-gourami") continue;
+    // Keep the solitary gourami solitary and the surface hatchets a fixed group; the
+    // tetras and corys may still have young.
+    if (!grown || fish.breedIn > 0 || NON_BREEDING.has(fish.species)) continue;
     if (!parent || fish.age > parent.age) parent = fish;
   }
   if (!parent) return { born: false };

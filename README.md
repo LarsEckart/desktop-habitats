@@ -48,7 +48,7 @@ The desktop app supports macOS only. The browser preview needs a browser with We
 
 It uses more power than a still wallpaper because it renders a 3D scene. The amount depends on your Mac, screen resolution and number of displays. There isn't a measured battery-life estimate yet.
 
-The optimized build thins the rear rivergrass by about 30%, reduces oversampling and shadow work, and fully stops the render loop when paused or hidden. It keeps 4× multisampling, the HDR lighting, and the foreground planting. A saved tank may now hold up to 34 fish when the new species join its old residents. On an M5 Pro this halves the GPU time per frame; battery drain has not been measured.
+The optimized build thins the rear rivergrass by about 30%, reduces oversampling and shadow work, and fully stops the render loop when paused or hidden. It keeps 4× multisampling, the HDR lighting, and the foreground planting. A saved tank may now hold up to 40 fish when the new species join its old residents. On an M5 Pro this halves the GPU time per frame; battery drain has not been measured.
 
 The wallpaper caps visible animation at 30 fps to reduce background work. It renders at 1.25× resolution plugged in and 1.15× on battery, with 4× multisampling for smooth leaf edges, and slows or stops when covered:
 
@@ -130,7 +130,7 @@ Riverscape lives in `scenes/riverscape/`, including its textures and tests. Futu
 | --- | --- |
 | `scenes/riverscape/index.html`, `wallpaper.html`, `style.css` | Riverscape's preview and wallpaper layouts |
 | `scenes/riverscape/src/` | Fish, feeding, plants, water, terrain and rendering |
-| `scenes/riverscape/src/fish-species.js` | The active fish species definition |
+| `scenes/riverscape/src/fish-species.js` | The fish species definitions |
 | `scenes/riverscape/assets/` | Rock, wood and sand textures |
 | `scenes/riverscape/tests/` | Riverscape's headless simulation checks |
 | `wallpaper/` | Mac app and install/uninstall scripts |
@@ -139,14 +139,27 @@ Riverscape lives in `scenes/riverscape/`, including its textures and tests. Futu
 
 ### Adding a fish species
 
-`fish-species.js` defines the bloodfin tetra, pygmy corydoras and honey gourami. A species
-provides its mesh builder, materials, skin-shader hook, name and body measurements. The
-school draws each kind in its own batch, while sharing movement, feeding and cursor
-interaction. New tanks start with eight tetras, nine corys and one gourami; old saves
-keep their fish and gain the new kinds once. Corys travel near the sand, and the gourami
-does not breed. They share the tetra swim motion, but the cory has a broad, low head, short fins,
-a compact tail, a dark flank stripe and two pairs of mouth barbels. The gourami has
-a long dorsal fin, an anal skirt and pelvic feelers.
+`fish-species.js` defines the bloodfin tetra, pygmy corydoras, honey gourami and marbled
+hatchetfish. A species provides its mesh builder, materials, skin-shader hook, name and
+body measurements, plus a behaviour profile: how it uses the shared swimming rig. The
+school draws each kind in its own batch and owns the rig itself (physics, modes, senses,
+feeding and cursor interaction); the profile sets the species' pace, tail gait, pectoral
+drive, water band, station keeping, startle, perching and surface breathing as differences
+from the tetra's defaults. New tanks start with eight tetras, nine corys, one gourami and
+six hatchetfish; old saves keep their fish and gain each new kind once. Neither the gourami
+nor the hatchetfish breed.
+
+Pygmy corys hover low over the sand on their pectorals, come to rest on it between short
+hops, and dash to the film now and then for a gulp of air. Hatchetfish hold a fixed station
+right under the film, trimming with their wing-like pectorals, and dart hard when startled.
+The gourami sculls slowly, keeps its own company and rises calmly to breathe. In shape, the
+cory has a broad, low head, short fins, a compact tail, a dark flank stripe and two pairs of
+mouth barbels. The gourami has a long dorsal fin, an anal skirt and pelvic feelers. The
+hatchetfish has a deep, thin keeled chest, a straight back, wing-like pectorals and brown
+marbling down the keel.
+
+`node scenes/riverscape/tests/fish-preview.mjs <species-key> <out-prefix>` writes PNG views
+of a species' actual mesh without a browser, for checking a shape before opening the scene.
 
 Run the checks with Node.js:
 

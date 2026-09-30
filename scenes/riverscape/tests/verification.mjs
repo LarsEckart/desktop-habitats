@@ -7,7 +7,7 @@ import {
   scenarioFixture,
 } from "../src/verification.js";
 import { FRESH_COUNT, MATURITY_AGE, POPULATION_CAP } from "../src/breeding.js";
-import { HUNT } from "../src/turtle-simulation.js";
+import { CAPACITY, STOCKED_COUNT } from "../src/tank-state.js";
 
 function memoryStorage() {
   const values = new Map();
@@ -27,10 +27,7 @@ function query({ scenario, seed, run } = {}) {
 }
 
 const ids = listScenarios().map((item) => item.id);
-assert.deepEqual(ids, [
-  "fresh", "legacy-save", "growth", "full-tank", "turtle-rest", "turtle-walk",
-  "turtle-breathe", "hunt-hit", "hunt-miss", "prey-loss", "minimum-population",
-]);
+assert.deepEqual(ids, ["fresh", "legacy-save", "growth", "full-tank"]);
 
 // Missing seed must use the documented default, not Number(null) === 0.
 {
@@ -79,7 +76,6 @@ assert.deepEqual(
   scenarioFixture("growth").fish.slice(0, 3).map(({ age, adult }) => ({ age, adult })),
   [{ age: 0, adult: false }, { age: MATURITY_AGE / 2, adult: false }, { age: MATURITY_AGE, adult: true }],
 );
-assert.equal(scenarioFixture("minimum-population").fish.length, HUNT.minPopulation);
 
 // A saved verification fixture reloads as the durable population, rather than appending
 // another fixture. The normal tank key is never touched.
@@ -103,12 +99,12 @@ assert.equal(scenarioFixture("minimum-population").fish.length, HUNT.minPopulati
 // checks stay not-exercised until the relevant event has had time to happen.
 {
   const storage = memoryStorage();
-  const session = createVerificationSession({ query: query({ scenario: "hunt-hit" }), storage });
+  const session = createVerificationSession({ query: query({ scenario: "growth" }), storage });
   const state = session.state();
   assert.equal(state.metadata.class, "prepared-condition");
-  assert.ok(state.metadata.controlledStimuli.some((item) => item.startsWith("placed-prey:")));
-  assert.equal(state.checks.find((check) => check.id === "hunt-hit").status, "not-exercised");
-  assert.equal(state.checks.find((check) => check.id === "hunt-hit").status, "not-exercised");
+  assert.equal(state.metadata.fixtureOverrides.stages.length, 3);
+  assert.equal(state.checks.find((check) => check.id === "baby-present").status, "passed");
+  assert.equal(state.checks.find((check) => check.id === "baby-grows").status, "not-exercised");
 }
 
 // The public control shape is headless-testable and step bounds are deterministic.
@@ -126,78 +122,48 @@ assert.equal(scenarioFixture("minimum-population").fish.length, HUNT.minPopulati
     assert.equal(typeof api[name], "function", `public API has ${name}()`);
 }
 
-// Real headless scene integration: the actual fish school updates first, then the
-// verification hook prepares only the named stimulus before the real turtle simulation.
-// This catches moving-snount prey, repeated miss stimulus, and post-catch retargeting.
+// Real headless scene integration: the fresh fixture stocks every species the way the
+// scene does, saves at the stocked size, and a reload adds no second group.
 register("./three-loader.mjs", import.meta.url);
 const THREE = await import("three");
 const { createFishSchool } = await import("../src/fish.js");
-const { createFood } = await import("../src/food.js");
-const { createTurtle } = await import("../src/turtle.js");
 const { randomGenerator } = await import("../src/math.js");
-
-async function runPreparedHunt(id, seed = 42) {
+{
   const storage = memoryStorage();
-  const session = createVerificationSession({ query: query({ scenario: id, seed, run: `headless-${id}-${seed}` }), storage });
+  const session = createVerificationSession({ query: query({ scenario: "fresh", seed: 42, run: "headless-fresh" }), storage });
   const scene = new THREE.Scene();
-  const food = createFood(scene, { thickets: [] });
-  let time = 0;
-  let scatteredAtSnap = 0;
-  let fish;
-  const turtle = createTurtle(scene, {
-    ground: () => 0,
-    obstacles: [], swimObstacles: [], beds: [],
-    turtle: session.fixture.turtle,
-    random: randomGenerator(seed + 1),
-    options: session.options,
-    onCatch: (sid) => fish.remove(sid),
-    onSnap: (snap) => {
-      scatteredAtSnap = fish.scatter(snap);
-      session.record(time, "hunt-snap", { ...snap, scattered: scatteredAtSnap });
-    },
-  });
-  fish = createFishSchool(scene, {
-    obstacles: [], landmarks: [], thickets: [], food, lure: turtle.lure,
-    population: session.fixture, random: randomGenerator(seed),
+  const fish = createFishSchool(scene, {
+    obstacles: [], landmarks: [], thickets: [], population: session.fixture,
+    stockNewSpecies: true, random: randomGenerator(42),
   });
   session.bind({
-    snapshot: () => { const value = fish.snapshotPopulation(); value.turtle = turtle.snapshot(); return value; },
-    turtleState: turtle.getState(), stats: () => ({}), telemetry: () => ({}),
-    paused: () => true, simulationTime: () => time,
+    snapshot: () => fish.snapshotPopulation(), stats: () => ({}), telemetry: () => ({}),
+    paused: () => true, simulationTime: () => 0,
   });
-  session.prepareScene({ fish, turtle });
-  for (let i = 0; i < 20 * 60; i++) {
+  let time = 0;
+  for (let i = 0; i < 60; i++) {
     time += 1 / 60;
     fish.update(1 / 60, time, null);
     session.observeFish(time, fish);
-    session.beforeTurtleUpdate({ simulationTime: time, fish, turtle });
-    turtle.update(1 / 60, fish.fish);
-    session.observeTurtle(time, turtle);
   }
-  const result = turtle.getState().hunt;
   const state = session.state();
-  fish.dispose(); turtle.dispose(); food.dispose?.();
-  return { result, state, scatteredAtSnap };
-}
-for (const seed of [1, 42, 100]) {
-  const { result, state, scatteredAtSnap } = await runPreparedHunt("hunt-hit", seed);
-  assert.ok(result.hits >= 1, `prepared real-school hit completed for seed ${seed} (${result.hits})`);
-  assert.ok(scatteredAtSnap > 0, `real fish.scatter moves bystanders for seed ${seed} (${scatteredAtSnap})`);
-  const setup = state.events.find((event) => event.type === "stimulus-prey-placed");
-  assert.equal(setup.details.bystanders.length, 2, `two natural bystanders prepared for seed ${seed}`);
-  assert.equal(state.snapshot.fish.length, FRESH_COUNT - 1, `real hit removes exactly one fish for seed ${seed}`);
-}
-{
-  const { result, state, scatteredAtSnap } = await runPreparedHunt("hunt-miss");
-  assert.ok(result.misses >= 1, `prepared real-school miss completed (${result.misses})`);
-  assert.ok(scatteredAtSnap > 0, `real fish.scatter moves bystanders on miss (${scatteredAtSnap})`);
-  assert.equal(state.snapshot.fish.length, FRESH_COUNT, "real miss keeps the population");
+  assert.equal(state.snapshot.fish.length, FRESH_COUNT + STOCKED_COUNT, "the fresh scene stocks every species once");
+  assert.equal(state.checks.find((check) => check.id === "fresh-count").status, "passed");
+  assert.ok(session.savePopulation(fish.snapshotPopulation()));
+  const again = createFishSchool(new THREE.Scene(), {
+    obstacles: [], landmarks: [], thickets: [], population: session.load(),
+    stockNewSpecies: true, random: randomGenerator(42),
+  });
+  assert.equal(again.fish.length, FRESH_COUNT + STOCKED_COUNT, "a reload adds no second group");
+  fish.dispose(); again.dispose();
 }
 {
-  const { result, state } = await runPreparedHunt("prey-loss");
-  assert.equal(result.snaps, 0, "prey loss cancels before a snap");
-  assert.equal(result.target, null, "prey loss clears the tracked target");
-  assert.equal(state.snapshot.fish.length, FRESH_COUNT - 1, "prey loss removes only the prepared prey");
+  const full = createFishSchool(new THREE.Scene(), {
+    obstacles: [], landmarks: [], thickets: [], population: scenarioFixture("full-tank"),
+    stockNewSpecies: true, random: randomGenerator(42),
+  });
+  assert.equal(full.fish.length, CAPACITY, "the full tank fixture fills the render capacity once stocked");
+  full.dispose();
 }
 
-console.log("PASS: verification fixtures, metadata, default seed, isolated reload storage, checks, controls, and real-school hunt stimuli");
+console.log("PASS: verification fixtures, metadata, default seed, isolated reload storage, checks, controls, and real-school stocking");

@@ -25,15 +25,9 @@ swimming. Per fish:
   even when its saved running age is tiny, and makes a baby visibly distinct from day one.
 
 The whole tank also carries `breedIn`, the tank-level birth cooldown (one birth per
-cooldown, never more than the population cap of 24), and one optional **turtle** record:
-an opaque `id`, `hunger` (0–1), `feedIn` / `retryIn`, the running-second remainders of the
-turtle's after-meal and after-miss cooldowns, and `breathIn`, the remainder until its next
-trip to the surface (issue 04). Like a fish's `breedIn` they
-are remainders, not timestamps, so a restart continues them. Turtle position, pose,
-movement phase, and the hunt phase are live state and are rebuilt on load: a lunge that
-was in the air at save time neither lands nor repeats. A caught fish is removed from the
-`fish` array in the same call that removes it from the live shoal, so it can never be
-saved twice or resurrected.
+cooldown, never more than the population cap of 30). Nothing removes a fish from a tank,
+so a species that is present stays present, and the school stocks each later species (the
+corys, the gourami, the hatchetfish) only into a tank that has none of that kind.
 
 Everything else — fish position and pose, the pellet being chased — is rebuilt fresh on load. The
 school in `fish.js` adopts a saved population and `snapshotPopulation()` hands the durable
@@ -65,14 +59,11 @@ silver loss.
 
 ## Version history and migration
 
-v3 adds the optional turtle identity. A valid v1 or v2 save has no turtle; the live scene
-creates one and writes it in the startup save. A valid v3 turtle id is restored as-is.
-A malformed turtle field is dropped without dropping the fish, since the turtle identity
-can be replaced. The turtle clocks (`hunger`, `feedIn`, `retryIn`, `breathIn`) are optional on top of
-the id, so an earlier v3 save without them still reads (the live turtle applies its default
-hunger); when present each must be a finite non-negative number or the turtle record is
-dropped the same way. The version stays 3 because an older reader ignores the extra
-fields and cannot misread them. Other extra turtle fields are ignored.
+v3 was introduced for a snapping turtle record (`turtle`) and a one-shot stocking flag
+(`stocked`) that have both since been removed with the turtle. The reader still accepts v3
+saves and ignores those fields the way it ignores any extra field, so a tank saved while the
+turtle existed keeps every fish. The version stays 3 because nothing about the fish records
+changed and an older reader cannot misread the file.
 
 v2 allowed variable restored counts (births) and the growth/breeding fields. A v1 save —
 which always carried the old fixed
@@ -85,18 +76,19 @@ population of exactly 24 fish with only id/species/age — is migrated in `valid
   and breeding-ready rather than shrinking them into fry because their pre-growth running
   age happened to be small.
 
-Because 24 is exactly the capacity floor, a migrated tank renders at the full 24 and its
-birth machinery stays idle (births cap at `POPULATION_CAP`, so an update never surprises
-an existing aquarium with babies). If a future tuning ever lowers `POPULATION_CAP` below
-24, the renderer still keeps room for all 24 (`CAPACITY`) and the tank simply holds steady.
+A migrated tank renders at the full 24, gains the later species on top (`CAPACITY` is
+24 plus the 16 stocked fish), and, because the birth cap is 30, may add a few babies over
+time. If a future tuning ever lowers `POPULATION_CAP` below 24, the renderer still keeps
+room for all 24 (`CAPACITY`) and the tank simply holds steady.
 
 Tuning for the v2 growth/breeding model (all constants in `breeding.js`, easy to retune):
 
-- `FRESH_COUNT` **8** — a brand-new tank starts with 8 adult fish, fewer than the old 24;
-  existing saves keep whatever they had.
-- `POPULATION_CAP` **24** — the *birth* ceiling: how many fish the breeding machinery may
-grow a tank to, and how crowded it may ever be. Restore/render uses `CAPACITY = max(24,
-POPULATION_CAP)`, described above.
+- `FRESH_COUNT` **8** — a brand-new tank starts with 8 adult tetras; the school then stocks
+  nine corys, one gourami and six hatchetfish, 24 in all. Existing saves keep whatever
+  they had and gain the same groups.
+- `POPULATION_CAP` **30** — the *birth* ceiling: how many fish the breeding machinery may
+  grow a tank to. Restore/render uses `CAPACITY = max(24 + 16, POPULATION_CAP)` = 40,
+  described above.
 - `MATURITY_AGE` / `GROWTH_SECONDS` **5400 s** (90 min of running time) — a baby grows
   from 40% of adult size to full size, and becomes breeding-eligible.
 - `PER_FISH_BREED_COOLDOWN` **5400 s** — an adult rests before breeding again.
@@ -189,7 +181,7 @@ Automated, in CI-style `npm test`:
 - `tests/breeding.mjs` — the pure growth curve; mature-only breeding (a baby must grow
   before it can breed); per-fish and tank cooldowns on a controlled clock with `dt === 0`
   changing nothing; cooldown *remainders* surviving a reload without a duplicate birth;
-  and a hard-population-cap simulation where many ready adults still never exceed 24.
+  and a hard-population-cap simulation where many ready adults still never exceed the cap.
 - `tests/tank-save.mjs` — a saved population (any count up to the cap) restores stable
   ids/species/ages and breeding state; age advances only while `dt > 0`; a live snapshot
   round-trips through both adapters (browser `localStorage` and a fake WebKit host bridge)
@@ -202,10 +194,9 @@ Automated, in CI-style `npm test`:
   exactly as many instances as fish exist.
 - `tests/render-policy.mjs` — the stall rule: a 5 s scheduler gap delivers `dt = 0` while
   normal pacing is preserved.
-- `tests/turtle.mjs` — v3 turtle identity round trips without changing fish; old fish-only
-  records gain one id; the complete turtle pose freezes at `dt = 0`; hunger and cooldown
-  remainders round-trip, a save taken mid-lunge reloads at rest without a catch, bad clocks
-  drop only the turtle, and a caught fish leaves the live and saved lists together.
+- `tests/mixed-fish.mjs` — each later species is stocked once into new and old tanks, in
+  its own render batch and its own band of water; leftover `turtle` and `stocked` fields
+  from earlier v3 saves are dropped without losing a fish.
 - `wallpaper/tests/main.swift` (via `wallpaper/tests/run.sh`) — the AppKit-free lifecycle
   helpers: the one-shot `Finish` gate (flush timeout cannot be followed by a stale save)
   and the `LifecycleCoordinator` rebuild/terminate state machine. Gated to macOS by
@@ -229,9 +220,9 @@ Actually exercised in a real browser (this issue's check):
 
 Only manual (Mac wallpaper integration, **not** yet run):
 
-- Visual crowding/frame-cost review of a full 24-fish tank on real hardware in both
+- Visual crowding/frame-cost review of a full 40-fish tank on real hardware in both
   preview (all display modes) and the native wallpaper, including a tank that has grown
-  from 8 to 24 through actual births over hours of running time.
+  from 24 to 30 through actual births over hours of running time.
 - The tuned timing feel: births at ~10 min spacing, fry visible for ~90 min of running
   time, first birth in a fresh tank after 10 running minutes.
 
@@ -253,8 +244,6 @@ app.
 - `src/fish.js` — adopts a population; tracks age; `snapshotPopulation()`.
 - `src/main.js` — loads a population; initial/periodic/lifecycle saves; `habitatSnapshot`.
 - `src/frame-loop.js` — the 100 ms stall rule that never turns a gap into simulated age.
-- `src/turtle-simulation.js` — pure turtle placement, movement, footprint, pose, and hunt.
-- `src/turtle.js` — the merged Three.js turtle view; saves id, hunger, and cooldowns.
 - `wallpaper/Wallpaper.swift` — `TankStore` (Application Support, display→tank mapping),
   state injection, `tankSave`, stop+snapshot teardown.
 - `wallpaper/Lifecycle.swift` — AppKit-free `Finish` gate and rebuild/terminate machine.

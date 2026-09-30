@@ -1,7 +1,14 @@
 import * as THREE from "three";
 import { groundHeight, randomGenerator, smoothstep } from "./math.js";
 import { flowDirectionAt, shelteredVelocity, thicketAt } from "./water.js";
-import { bloodfinTetra, pygmyCory, honeyGourami } from "./fish-species.js";
+import {
+  bloodfinTetra,
+  pygmyCory,
+  honeyGourami,
+  marbledHatchetfish,
+  speciesByKey,
+  DEFAULT_BEHAVIOUR,
+} from "./fish-species.js";
 import { roundAge, uid, SAVE_VERSION, FRESH_COUNT, CAPACITY } from "./tank-state.js";
 import { sizeScale, MATURITY_AGE, breedMany, TANK_BREED_COOLDOWN } from "./breeding.js";
 
@@ -23,6 +30,23 @@ export const BOUNDS = {
 // Open-water routes include the space above and alongside the planting.
 const OPEN = { minX: -7.5, maxX: 7.5, minY: 1.8, maxY: 7.4, minZ: -1.4, maxZ: 2.8 };
 const GROUND_CLEARANCE = 0.55;
+// Resting on the sand. A percher (see the species profiles) is let down through the
+// ground clearance to `clearance` times its size, which puts a cory's belly on the
+// substrate; it comes down at `descent` and is held on the spot once within `hold` of
+// it. `lift` is the time (seconds) the clearance takes to relax and to come back, so a
+// fish leaving its perch is not thrown up off the sand by the floor clamp. Resting fish
+// face into the current, as corys on the bottom of a stream do.
+// Above `level` from the spot the fish comes down nose-first; inside it, it levels out.
+const PERCH = { clearance: 0.085, descent: 0.45, hold: 0.06, level: 0.3, lift: 0.7, sway: 0.004 };
+// A trip to the film for air: how far under the ceiling the fish aims, and how near it
+// has to get before it counts as having breathed and turns back down.
+const BREATH = { depth: 0.65, reach: 0.9 };
+// A species' band (its profile's `band`) pulls a fish that has strayed out of it back
+// at this rate, softly, unless it is feeding or up for air. A band that runs up to within
+// this much of the ceiling belongs to a surface fish, which keeps less room off the film.
+const BAND = { pull: 0.8, surface: 1.0 };
+// The groups a tank gains once for each species added after the tetras, in order.
+const STOCKING = [[pygmyCory.key, 9], [honeyGourami.key, 1], [marbledHatchetfish.key, 6]];
 // How far from a wall or the ceiling a fish is bound to keep, measured in its own body
 // (units times growth): an adult always stays this far off a wall and the ceiling, and a
 // fry only a proportional fraction of it. It is the unbreakable room the final position
@@ -55,14 +79,15 @@ const SWIM = {
     travel: 6.0,
     feed: 9.0,
     escape: 0,
+    perch: 0,
   },
 };
 // Tetras alternate a few propulsive strokes with a straight-bodied coast. The same
 // envelope drives both thrust and body motion. Timing is tuned for this calm tank;
-// the behavioural reference is Li et al. 2021, doi:10.1038/s42003-020-01521-z.
+// the behavioural reference is Li et al. 2021, doi:10.1038/s42003-020-01521-z. The
+// stroke rate and the glide between bouts are the tetra's and live in its behaviour
+// profile (fish-species.js); the other species override them there.
 const GAIT = {
-  frequency: 3.2,
-  coast: [0.32, 0.65],
   // A fish swimming hard at food does not beat faster, it stops gliding: the cycle
   // period is held nearly constant and speed is set by the burst-to-coast ratio.
   feedCoast: [0.05, 0.2],
@@ -432,11 +457,6 @@ export function createFishSchool(
     landmarks = [],
     thickets = [],
     food = null,
-    // A point the fish find worth a look that moves: the turtle's beak (issue 04). Fish
-    // visit it as they visit a rock, hanging just in front of it, which is what brings a
-    // fish within reach of an ambush predator that never chases. Updated in place by its
-    // owner; the school only reads it.
-    lure = null,
     species = bloodfinTetra,
     // A populated population to restore. Each record carries a stable id, species key,
     // running age and a breeding cooldown; a baby's mesh (position, pose) is still
@@ -460,7 +480,7 @@ export function createFishSchool(
   // breeding decisions have exactly one home — breeding.js — and a save is always the
   // true record, never a hand-built duplicate.
   const adopted = Array.isArray(population?.fish) && population.fish.length > 0;
-  const state = { breedIn: 0, fish: [], stocked: population?.stocked === true };
+  const state = { breedIn: 0, fish: [] };
   if (adopted) {
     state.breedIn = Math.max(0, Number(population.breedIn) || 0);
     for (const record of population.fish) {
@@ -482,14 +502,15 @@ export function createFishSchool(
       state.fish.push({ id: uid(), species: species.key, age: MATURITY_AGE, breedIn: 0, adult: true });
     }
   }
-  // Seed new and saved tanks once. Never displace an existing resident.
-  if (stockNewSpecies && !state.stocked) {
-    for (const [key, count] of [[pygmyCory.key, 9], [honeyGourami.key, 1]]) {
+  // Seed new and saved tanks with each later species once: a tank that has none of a kind
+  // gains its group, and nothing here ever displaces an existing resident. Nothing removes
+  // a fish from a tank, so a kind that is present stays present and is never restocked.
+  if (stockNewSpecies) {
+    for (const [key, count] of STOCKING) {
       if (state.fish.some((f) => f.species === key)) continue;
       for (let i = 0; i < count && state.fish.length < CAPACITY; i++)
         state.fish.push({ id: uid(), species: key, age: MATURITY_AGE, breedIn: 0, adult: true });
     }
-    state.stocked = true;
   }
   // The school's random source: the seeded `random` parameter (defaults to the deterministic
   // 583137 generator), driving every stochastic choice in this tank -- turning, targets,
@@ -525,7 +546,7 @@ export function createFishSchool(
     return { kind, geometry, swimAttribute, finPhaseAttribute, skin, fins, depth, bodies, membranes };
   }
   const batches = new Map();
-  for (const kind of [species, pygmyCory, honeyGourami])
+  for (const kind of [species, pygmyCory, honeyGourami, marbledHatchetfish])
     if (!batches.has(kind.key)) batches.set(kind.key, makeBatch(kind));
 
   // Places a fish may go and look at: the hardscape landmarks and spots inside the grass.
@@ -541,7 +562,6 @@ export function createFishSchool(
         ),
         obstacle: -1,
       });
-  if (lure) interests.push({ kind: "turtle", point: lure, obstacle: -1 });
 
   let elapsed = 0;
   // The scene clock the water model runs on, kept so behaviours that need to know which
@@ -549,8 +569,6 @@ export function createFishSchool(
   let waterClock = 0;
   let startled = 0;
   let escapes = 0;
-  let scatters = 0;
-  let taken = 0;
   const initialPositions = [];
   // Build one live, renderable fish from its durable record. `id` is the live array/
   // instance index, recomputed on every load and never mistaken for the stable `sid`.
@@ -560,15 +578,26 @@ export function createFishSchool(
     const sid = record.id;
     const speciesKey = record.species;
     const baseAge = record.age;
+    // How this kind of fish uses the rig. A species without a profile swims as a tetra.
+    const behaviour =
+      (speciesKey === species.key ? species : speciesByKey[speciesKey])?.behaviour ??
+      DEFAULT_BEHAVIOUR;
     const position = (
       at || new THREE.Vector3()
     );
     if (!at) {
       const band = offset % 6;
+      // Surface fish start in their band under the film; perchers low over the sand
+      // where they rest; everyone else in the open water.
+      const column = behaviour.band;
       do {
         position.set(
           -5.7 + band * 2.18 + range(-0.45, 0.45),
-          speciesKey === pygmyCory.key ? range(0.75, 1.55) : range(2.55, 5.75),
+          column
+            ? behaviour.perch
+              ? range(column.minY + 0.05, column.minY + 0.85)
+              : range(column.minY, column.maxY)
+            : range(2.55, 5.75),
           range(0.42, 2.7),
         );
       } while (
@@ -588,6 +617,7 @@ export function createFishSchool(
       // `id` is only the live array index rebuilt on every load.
       sid,
       species: speciesKey,
+      behaviour,
       // Age in running simulation seconds, seeded from the save and advanced only while
       // the tank is actually being drawn (dt > 0 below).
       age: baseAge,
@@ -599,6 +629,8 @@ export function createFishSchool(
       goal: position.clone(),
       quaternion: new THREE.Quaternion(),
       scale: range(0.83, 1.08),
+      // Current drawn size, refreshed every step from scale and growth.
+      size: 0,
       phase: range(0, TAU),
       character: range(0.8, 1.2),
       seed: range(0, 100),
@@ -615,6 +647,22 @@ export function createFishSchool(
       yawRate: 0,
       bend: 0,
       finBrake: 0.25,
+      // Pectoral sculling under way right now, 0 to 1, for the fins' beat.
+      scull: 0,
+      // Resting on the sand. `grounded` is how far (0 to 1) the floor clearance has
+      // relaxed for a fish settling onto or lifting off its perch; `perchSpot` is where
+      // it is going to lie or is lying; `toPerch` marks a hop whose end is a perch.
+      grounded: 0,
+      perchSpot: new THREE.Vector3(),
+      toPerch: false,
+      // True while the fish is actually lying on its perch rather than sinking onto it.
+      held: false,
+      // Up for air: set while the fish is on its way to the film, and when it next goes.
+      breathing: false,
+      nextBreath:
+        behaviour.breath.interval > 0
+          ? range(0.3, 1.2) * behaviour.breath.interval
+          : Infinity,
       urge: 0,
       // Curiosity builds while a fish holds station and is spent on a visit somewhere.
       curiosity: range(0, 0.7),
@@ -729,11 +777,51 @@ export function createFishSchool(
     f.until = Infinity;
     f.urge = 0;
     f.anchor.copy(f.position);
+    // A fixed station is always inside the species' band, so a fish that stopped a
+    // little outside it does not hold there.
+    const { band } = f.behaviour;
+    if (band) f.anchor.y = THREE.MathUtils.clamp(f.anchor.y, band.minY, band.maxY);
     f.nextTwitch = elapsed + exponential(HOVER.twitchInterval);
-    // A fish that has been in food recently will not hold station for long.
+    // A fish that has been in food recently will not hold station for long; a patient
+    // species holds it longer.
     f.nextExcursion =
       elapsed +
-      exponential(HOVER.excursionInterval / (f.character * (1 + f.foraging)));
+      exponential(
+        (HOVER.excursionInterval * f.behaviour.patience) / (f.character * (1 + f.foraging)),
+      );
+  }
+
+  // Coming to rest on the sand directly below. The spot is where the belly will lie; the
+  // fish sinks onto it over the next second or two on its pectorals and then holds there,
+  // fins out as struts, until it is time to hop again.
+  function perch(f) {
+    const { position } = f;
+    f.mode = "perch";
+    f.toPerch = false;
+    f.stroke = null;
+    f.interest = null;
+    f.perchSpot.set(
+      position.x,
+      groundHeight(position.x, position.z) + PERCH.clearance * (f.size || f.scale),
+      position.z,
+    );
+    const [low, high] = f.behaviour.perch.duration;
+    f.until = elapsed + range(low, high) * f.character;
+  }
+
+  // Off to the film for a gulp of air, straight up from wherever the fish is, and back
+  // down again afterwards (see decide). Corys do this in a hurry; a gourami rises calmly.
+  function breathe(f) {
+    f.breathing = true;
+    f.nextBreath = elapsed + exponential(f.behaviour.breath.interval);
+    target.set(
+      f.position.x + range(-0.6, 0.6),
+      BOUNDS.maxY - BREATH.depth,
+      f.position.z + range(-0.4, 0.4),
+    );
+    clampToBox(target, BOUNDS, 0.45, sizeScale(f.age, f.adult));
+    target.y = BOUNDS.maxY - BREATH.depth;
+    travel(f, target, true);
   }
 
   function inspect(f) {
@@ -746,12 +834,19 @@ export function createFishSchool(
   function travel(f, goal, recruited = false) {
     f.mode = "travel";
     f.goal.copy(goal);
-    if (f.species === pygmyCory.key)
-      f.goal.y = Math.min(BOUNDS.maxY - 0.5, groundHeight(f.goal.x, f.goal.z) + 0.85);
+    // A species with a band of its own crosses the tank inside it: hatchetfish in the top
+    // hand's breadth of water, corys low over the sand. A trip up for air is the one
+    // journey that leaves it.
+    const { band } = f.behaviour;
+    if (band && !f.breathing) {
+      f.goal.y = THREE.MathUtils.clamp(f.goal.y, band.minY, band.maxY);
+      f.goal.y = Math.max(f.goal.y, groundHeight(f.goal.x, f.goal.z) + GROUND_CLEARANCE + 0.15);
+    }
     // Only a fish leaving of its own accord draws others after it; a follower does not
     // start a chain of followers.
     f.departed = recruited ? -Infinity : elapsed;
-    f.until = elapsed + f.position.distanceTo(goal) / (SWIM.cruise * 0.6) + 2;
+    f.until =
+      elapsed + f.position.distanceTo(f.goal) / (SWIM.cruise * f.behaviour.cruise * 0.6) + 2;
   }
 
   function visit(f) {
@@ -777,6 +872,32 @@ export function createFishSchool(
       return out;
     }
     const r = random();
+    const { band, perch: rest, reach } = f.behaviour;
+    if (band) {
+      // A species with a band of its own crosses the tank inside it, anywhere in it: a
+      // hatchetfish anywhere under the film, a cory anywhere in the low water. A percher
+      // is drawn to the sand itself more often than not, since that is where it rests.
+      // A species with a `reach` only moves that far at a time, in a dart rather than a
+      // crossing.
+      for (let attempt = 0; attempt < 12; attempt++) {
+        if (reach) {
+          const angle = range(0, TAU);
+          const hop = range(reach[0], reach[1]);
+          out.set(
+            THREE.MathUtils.clamp(f.position.x + Math.cos(angle) * hop, OPEN.minX, OPEN.maxX),
+            0,
+            THREE.MathUtils.clamp(f.position.z + Math.sin(angle) * hop, OPEN.minZ, OPEN.maxZ),
+          );
+        } else out.set(range(OPEN.minX, OPEN.maxX), 0, range(OPEN.minZ, OPEN.maxZ));
+        const sand = groundHeight(out.x, out.z) + GROUND_CLEARANCE;
+        out.y =
+          rest && random() < 0.6
+            ? sand + range(0.15, 0.7)
+            : range(Math.max(band.minY, sand + 0.15), band.maxY);
+        if (reach || out.distanceToSquared(f.position) > 9) break;
+      }
+      return out;
+    }
     if (r < 0.55 || (r < 0.75 && !thickets.length)) {
       for (let attempt = 0; attempt < 12; attempt++) {
         out.set(
@@ -805,14 +926,39 @@ export function createFishSchool(
   // Leaving station: on a visit if curiosity has built up, after a departing neighbour,
   // along whatever is pulling, or off to a fresh destination.
   function leave(f, leader = null) {
+    const wasPerched = f.mode === "perch";
     if (
-      f.species !== pygmyCory.key &&
+      f.behaviour.visits &&
       interests.length &&
       f.curiosity > 0.55 &&
       random() < f.curiosity * 0.9 &&
       explorers() < MAX_EXPLORERS
     ) {
       visit(f);
+      return;
+    }
+    // A percher already low over the sand, with nothing pulling it, mostly just settles
+    // onto it. One getting up usually only shuffles a body length or three along the
+    // sand to the next resting place, which is what a group of corys on the bottom looks
+    // like: not a shoal on the move but a scatter of fish each hopping in its own time.
+    const { perch: rest } = f.behaviour;
+    const height = f.position.y - groundHeight(f.position.x, f.position.z);
+    if (rest && !wasPerched && !leader && height < GROUND_CLEARANCE * 2.6 && random() < rest.chance) {
+      perch(f);
+      return;
+    }
+    if (rest && wasPerched && !leader && random() < rest.hop) {
+      const hop = range(rest.hopRange[0], rest.hopRange[1]);
+      const angle = range(0, TAU);
+      target.set(
+        f.position.x + Math.cos(angle) * hop,
+        0,
+        f.position.z + Math.sin(angle) * hop,
+      );
+      clampToBox(target, BOUNDS, 0.6, sizeScale(f.age, f.adult));
+      target.y = groundHeight(target.x, target.z) + GROUND_CLEARANCE + 0.25;
+      travel(f, target);
+      f.toPerch = true;
       return;
     }
     if (leader)
@@ -1097,19 +1243,22 @@ export function createFishSchool(
     f.strikeUntil = 0;
     f.recruiter = null;
     f.mode = "escape";
+    f.toPerch = false;
     f.alarm += 1;
     f.refractoryUntil = elapsed + CSTART.refractory;
     const burst = range(CSTART.burst[0], CSTART.burst[1]);
+    // A hatchetfish's dart is a good deal harder than a tetra's; the profile says how much.
+    const dart = f.behaviour.startle.burst;
     startFlick(
       f,
       angle,
       {
         curvature: CSTART.curvature * Math.min(1, 0.45 + Math.abs(angle) / 2),
-        thrust: CSTART.thrust,
+        thrust: CSTART.thrust * dart,
         stage1: CSTART.stage1,
         stage2: CSTART.stage2,
         burst,
-        burstThrust: CSTART.burstThrust,
+        burstThrust: CSTART.burstThrust * dart,
       },
       Math.asin(THREE.MathUtils.clamp(flight.y, -0.4, 0.4)),
     );
@@ -1149,7 +1298,7 @@ export function createFishSchool(
     const seen = f.heading.dot(target) > SENSES.blindCosine;
     // Closing speed over distance: the rate the object grows in the fish's eye.
     const looming = -pointer.velocity.dot(target) / Math.max(d, 0.4);
-    const threshold = THREAT.looming * (1 + f.alarm);
+    const threshold = THREAT.looming * f.behaviour.startle.threshold * (1 + f.alarm);
     if (
       seen &&
       looming > threshold &&
@@ -1178,11 +1327,26 @@ export function createFishSchool(
   function decide(f) {
     if (f.mode === "escape") settle(f);
     else if (f.mode === "travel") {
-      if (f.interest) inspect(f);
-      else if (random() < 0.72) leave(f);
+      if (f.breathing) {
+        // Gulped. Back down into the band the fish lives in, or to the open water.
+        f.breathing = false;
+        destination(f, target);
+        clampToBox(target, BOUNDS, 0.45, sizeScale(f.age, f.adult));
+        travel(f, target, true);
+      } else if (f.toPerch) perch(f);
+      else if (f.interest) inspect(f);
+      else if (random() < f.behaviour.wander) leave(f);
       else settle(f);
     }
-    else if (f.mode === "settle") hover(f);
+    else if (f.mode === "settle") {
+      // A percher that has come to rest low enough usually sinks the rest of the way
+      // onto the sand rather than hanging over it.
+      const { perch: rest } = f.behaviour;
+      const height = f.position.y - groundHeight(f.position.x, f.position.z);
+      if (rest && height < GROUND_CLEARANCE * 2.6 && random() < rest.chance) perch(f);
+      else hover(f);
+    }
+    else if (f.mode === "perch") leave(f);
     else if (f.mode === "inspect") {
       f.interest = null;
       leave(f);
@@ -1307,7 +1471,7 @@ export function createFishSchool(
         const d = Math.sqrt(distanceSquared);
         if (heading.dot(delta) < SENSES.blindCosine * d && d > SENSES.lateralLine)
           continue;
-        if (other.species === f.species && f.species !== honeyGourami.key) {
+        if (other.species === f.species && f.behaviour.shoals) {
           seen++;
           centroid.add(other.position);
           if (other.mode === "travel" || other.mode === "escape")
@@ -1439,6 +1603,15 @@ export function createFishSchool(
           }
         }
       }
+      // Air. A fish that breathes at the film goes up for it from a rest or a station,
+      // never out of a feed or an escape, and never while something has it worried.
+      if (
+        elapsed >= f.nextBreath &&
+        (f.mode === "hover" || f.mode === "perch") &&
+        !f.flick &&
+        f.alarm < 0.5
+      )
+        breathe(f);
       if (f.mode === "hover" && !f.flick) {
         f.urge = THREE.MathUtils.lerp(f.urge, urge.length(), 1 - Math.exp(-dt / 0.5));
         const recruited =
@@ -1477,39 +1650,79 @@ export function createFishSchool(
       // `size / f.scale` ratio is the baby's growth so far (1 for a full-grown fish), and
       // every adult keeps exactly the old fixed distances.
       const wallDistance = 1.2 * (size / f.scale);
-      // A fish that has gone down to look at the turtle keeps much less room off the sand,
-      // as a fish nosing a rock does; the hard clamp below still holds it clear of it.
-      const floorRoom = f.interest?.kind === "turtle" ? wallDistance * 0.25 : wallDistance;
+      // A surface fish hangs right under the film, and any fish up for a gulp of air has
+      // to reach it, so they keep only a little of the usual room off the ceiling; the
+      // hard clamp below still holds their backs under the water.
+      const { band } = f.behaviour;
+      const atSurface = (band && band.maxY > BOUNDS.maxY - BAND.surface) || f.breathing;
+      const ceilingRoom = atSurface ? wallDistance * 0.3 : wallDistance;
+      // The sand, and the tank's own floor, push back from well above them, except under
+      // a fish that is settling onto the sand: the push fades as the clearance relaxes
+      // (see `grounded`), and a fish lying on the bottom is not pushed at all. The sand
+      // lies below BOUNDS.minY over most of the tank, so a percher has to be let through
+      // that floor as well as through its own clearance.
+      const { mode } = f;
+      f.grounded = THREE.MathUtils.lerp(
+        f.grounded,
+        mode === "perch" ? 1 : 0,
+        1 - Math.exp(-dt / PERCH.lift),
+      );
+      const settling = mode === "perch" ? 0 : 1 - f.grounded;
       for (const [axis, minimum, maximum] of [
         ["x", BOUNDS.minX, BOUNDS.maxX],
         ["y", BOUNDS.minY, BOUNDS.maxY],
         ["z", BOUNDS.minZ, BOUNDS.maxZ],
       ]) {
-        const below = axis === "y" ? floorRoom : wallDistance;
-        if (position[axis] < minimum + below)
-          avoid[axis] += (minimum + below - position[axis]) * 1.2;
-        if (position[axis] > maximum - wallDistance)
-          avoid[axis] -= (position[axis] - maximum + wallDistance) * 1.2;
+        const above = axis === "y" ? ceilingRoom : wallDistance;
+        const below = axis === "y" ? settling : 1;
+        if (position[axis] < minimum + wallDistance)
+          avoid[axis] += (minimum + wallDistance - position[axis]) * 1.2 * below;
+        if (position[axis] > maximum - above)
+          avoid[axis] -= (position[axis] - maximum + above) * 1.2;
       }
       const floor =
         groundHeight(position.x, position.z) + GROUND_CLEARANCE * (size / f.scale);
-      if (position.y < floor + floorRoom)
-        avoid.y += (floor + floorRoom - position.y) * 0.6;
+      if (position.y < floor + wallDistance)
+        avoid.y += (floor + wallDistance - position.y) * 0.6 * settling;
+      // A fish that has strayed out of its species' band is drawn gently back into it.
+      // Food, air and a rest on the sand are the reasons to be out of it.
+      if (band && !f.breathing && mode !== "feed" && mode !== "perch") {
+        if (position.y < band.minY) avoid.y += (band.minY - position.y) * BAND.pull;
+        else if (position.y > band.maxY) avoid.y -= (position.y - band.maxY) * BAND.pull;
+      }
 
       // The ground velocity each mode asks for, then what the fish itself must swim once
-      // the water's own motion is taken off.
-      const { mode } = f;
+      // the water's own motion is taken off. `held` is a perched fish lying still.
+      let held = false;
       if (mode === "hover") {
-        f.anchor.lerp(position, 1 - Math.exp(-dt / HOVER.drift));
+        // The station follows the fish, slowly, unless the species holds a fixed one.
+        if (Number.isFinite(f.behaviour.stationDrift))
+          f.anchor.lerp(position, 1 - Math.exp(-dt / f.behaviour.stationDrift));
         desired
           .subVectors(f.anchor, position)
           .multiplyScalar(HOVER.trim)
           .clampLength(0, HOVER.trimSpeed);
+      } else if (mode === "perch") {
+        // Sinking onto the spot on the pectorals, then lying on it. Once down, the fish
+        // swims nothing at all: the water may rock it a hair, and that is all the
+        // movement there is, apart from the barbels and the gill covers.
+        delta.subVectors(f.perchSpot, position);
+        const away = delta.length();
+        if (!f.held && away > PERCH.hold) {
+          desired.copy(delta).setLength(Math.min(PERCH.descent, away * 2));
+        } else {
+          // Touched down, and staying down: the fins take the fish's weight and it stops
+          // swimming altogether. The spot itself only ever pulls it the last hair.
+          held = true;
+          desired.set(0, 0, 0);
+          swim.set(0, 0, 0);
+          position.lerp(f.perchSpot, 1 - Math.exp(-dt * 8));
+          position.y += Math.sin(elapsed * 1.7 + f.seed) * PERCH.sway * dt;
+        }
       } else if (mode === "inspect") {
         // Hold just off the object, drifting slightly, with short pecks toward it.
         delta.subVectors(f.interest.point, position);
-        const standoff = f.interest.kind === "grass" ? 0.1
-          : f.interest.kind === "turtle" ? 0.4 : 0.32;
+        const standoff = f.interest.kind === "grass" ? 0.1 : 0.32;
         desired
           .copy(delta)
           .setLength(Math.max(0, delta.length() - standoff))
@@ -1531,11 +1744,13 @@ export function createFishSchool(
         }
         if (f.mode === "travel") {
           // Slower through the grass, easing off on the approach, and quicker for as long
-          // as the fish is still keyed up about food.
+          // as the fish is still keyed up about food. Each species has its own pace, and
+          // a cory going up for air is in a hurry.
           const speed =
-            SWIM.cruise * f.character * (bed ? 0.72 : 1) *
+            SWIM.cruise * f.behaviour.cruise * f.character * (bed ? 0.72 : 1) *
             (1 + FORAGE.hurry * f.keen) *
-            (f.interest ? Math.min(1, 0.25 + remaining / 1.2) : 1);
+            (f.breathing ? f.behaviour.breath.hurry : 1) *
+            (f.interest || f.toPerch ? Math.min(1, 0.25 + remaining / 1.2) : 1);
           desired.multiplyScalar(speed / remaining);
         } else desired.set(0, 0, 0);
       } else if (mode === "feed") {
@@ -1617,6 +1832,9 @@ export function createFishSchool(
       } else desired.set(0, 0, 0);
       desired.add(avoid).sub(water);
       desired.addScaledVector(separation, SHOAL.separation * (1 - 0.4 * f.keen));
+      // A fish lying on the sand is not moved by any of that: it is resting on something.
+      if (held) desired.set(0, 0, 0);
+      f.held = held;
       if (f.mode === "travel") desired.add(urge);
       else if (f.mode === "hover") desired.addScaledVector(urge, 0.5);
       // A feeding fish ignores the shoal, but not something that has come too close: the
@@ -1672,6 +1890,15 @@ export function createFishSchool(
         } else if (f.mode === "settle") {
           target.copy(heading).setY(0).normalize();
           steer = true;
+        } else if (f.mode === "perch") {
+          // Nose down toward the spot on the way to it, then level on the sand, swung
+          // slowly round to face into whatever current there is, as bottom fish do; with
+          // no current it keeps the heading it landed on.
+          delta.subVectors(f.perchSpot, position);
+          if (delta.length() > PERCH.level) target.copy(delta).normalize();
+          else if (water.lengthSq() > 0.0025) target.copy(water).negate().setY(0).normalize();
+          else target.copy(heading).setY(0).normalize();
+          steer = true;
         } else if (f.mode === "escape") {
           target.copy(heading).addScaledVector(avoid, 2).normalize();
           steer = avoid.lengthSq() > 1e-6;
@@ -1682,7 +1909,7 @@ export function createFishSchool(
         if (steer) {
           const yaw = yawOf(heading);
           const rate =
-            f.mode === "hover"
+            f.mode === "hover" || (f.mode === "perch" && held)
               ? TURN.hoverRate
               : f.mode === "escape"
                 ? 5
@@ -1697,7 +1924,8 @@ export function createFishSchool(
             1 - Math.exp(-dt * TURN.response),
           );
           const nextYaw = yaw + f.yawRate * dt;
-          const climb = f.mode === "feed" ? TURN.feedPitch : TURN.pitch;
+          const climb =
+            f.mode === "feed" || (f.mode === "perch" && !held) ? TURN.feedPitch : TURN.pitch;
           const pitch = THREE.MathUtils.lerp(
             Math.asin(heading.y),
             Math.asin(THREE.MathUtils.clamp(target.y, -climb, climb)),
@@ -1708,9 +1936,13 @@ export function createFishSchool(
       }
 
       // Start a short bout when forward speed falls below demand, then let momentum
-      // carry the fish. Pectoral trim does not make the tail beat.
+      // carry the fish. Pectoral trim does not make the tail beat, and a species whose
+      // pectorals can push it along (its profile's `pectoralThrust`) meets small demands
+      // by sculling with a straight body, firing the tail only for what is left over.
+      const { gait, pectoralThrust } = f.behaviour;
       let drive = Math.min(1, Math.sqrt(along / SWIM.thrustLimit.travel)) * flickWave;
-      const frequency = f.mode === "escape" ? 6 : GAIT.frequency * f.character;
+      let sculling = 0;
+      const frequency = f.mode === "escape" ? 6 : gait.frequency * f.character;
       if (flick) acceleration.copy(heading).multiplyScalar(along);
       else {
         acceleration.subVectors(desired, swim).multiplyScalar(1 / SWIM.response);
@@ -1727,21 +1959,31 @@ export function createFishSchool(
           f.mode === "feed" && foodDistance < FORAGE.brakeRange * standardLength * size
             ? SWIM.feedBrake
             : SWIM.brake;
+        // What the pectorals can supply of the forward demand; a feeding fish still
+        // strokes for everything, since the stalk is a tail-driven approach.
+        const pectoral =
+          f.mode === "feed" || held
+            ? 0
+            : THREE.MathUtils.clamp(forward, 0, pectoralThrust);
+        const unmet = forward - pectoral;
         if (f.stroke && (elapsed >= f.stroke.end || forward < -braking)) {
           f.stroke = null;
           f.nextStroke =
             elapsed +
-            range(...(f.mode === "feed" ? GAIT.feedCoast : GAIT.coast)) / f.character;
+            range(...(f.mode === "feed" ? GAIT.feedCoast : gait.coast)) / f.character;
         }
         if (
           !f.stroke &&
           elapsed >= f.nextStroke &&
-          forward > GAIT.minimumThrust &&
+          unmet > GAIT.minimumThrust &&
           SWIM.thrustLimit[f.mode] > 0 &&
           swim.dot(heading) < desired.dot(heading) * GAIT.restartSpeed
         ) {
           const beats =
-            (f.mode === "travel" || f.mode === "feed") && wanted > SWIM.cruise ? 2 : 1;
+            (f.mode === "travel" || f.mode === "feed") &&
+            wanted > SWIM.cruise * f.behaviour.cruise
+              ? 2
+              : 1;
           f.stroke = {
             start: elapsed,
             end: elapsed + beats / frequency,
@@ -1749,6 +1991,10 @@ export function createFishSchool(
           };
         }
         let tail = THREE.MathUtils.clamp(forward, -braking, 0);
+        if (pectoral > 0 && !f.stroke) {
+          tail = pectoral;
+          sculling = pectoral / pectoralThrust;
+        }
         if (f.stroke) {
           const progress = (elapsed - f.stroke.start) / (f.stroke.end - f.stroke.start);
           const envelope =
@@ -1777,14 +2023,20 @@ export function createFishSchool(
       // ceiling; every fish was then free to be pressed to the exact boundary regardless
       // of its body.) This is the final safety net after the soft `avoid` terms above.
       const bodyMargin = WALL_MARGIN * (size / f.scale);
-      const hardFloor = groundHeight(position.x, position.z) + GROUND_CLEARANCE * (size / f.scale);
+      // A percher's clearance relaxes down to its belly as it settles, and comes back
+      // over the same time as it lifts off, so the sand never throws it upward.
+      const hardFloor =
+        groundHeight(position.x, position.z) +
+        THREE.MathUtils.lerp(GROUND_CLEARANCE * (size / f.scale), PERCH.clearance * size, f.grounded);
       position.x = THREE.MathUtils.clamp(position.x, BOUNDS.minX + bodyMargin, BOUNDS.maxX - bodyMargin);
       position.z = THREE.MathUtils.clamp(position.z, BOUNDS.minZ + bodyMargin, BOUNDS.maxZ - bodyMargin);
       // The vertical band is bounded above by the ceiling margin and below by the higher of
       // the tank's own floor (minY) and the sand clearance, so a fish over a low patch of
       // sand never slips beneath the tank's bounding floor.
       if (position.y > BOUNDS.maxY - bodyMargin) position.y = BOUNDS.maxY - bodyMargin;
-      const floorY = Math.max(BOUNDS.minY, hardFloor);
+      // The tank's own floor gives way under a fish settling onto the sand, which lies
+      // below it over most of the tank; the sand clearance itself never does.
+      const floorY = Math.max(THREE.MathUtils.lerp(BOUNDS.minY, 0, f.grounded), hardFloor);
       if (position.y < floorY) position.y = floorY;
 
       // Yaw rate over speed is the curvature of the path; the body conforms to it, up to
@@ -1807,8 +2059,10 @@ export function createFishSchool(
         drive,
         1 - Math.exp(-dt * 18),
       );
+      // A perched fish props itself on its pectorals; a sculling one holds them out and
+      // beats them (below), which is most of what a hovering cory or hatchetfish shows.
       const pectorals =
-        f.mode === "settle"
+        f.mode === "settle" || f.mode === "perch"
           ? 1
           : f.mode === "inspect"
             ? 0.5
@@ -1821,9 +2075,15 @@ export function createFishSchool(
               : f.mode === "hover" && !flick
                 ? 0.25
                 : 0;
-      f.finBrake = THREE.MathUtils.lerp(f.finBrake, pectorals, 1 - Math.exp(-dt * 6));
+      f.scull = THREE.MathUtils.lerp(f.scull, sculling, 1 - Math.exp(-dt * 8));
+      f.finBrake = THREE.MathUtils.lerp(
+        f.finBrake,
+        Math.max(pectorals, 0.4 * f.scull),
+        1 - Math.exp(-dt * 6),
+      );
       if (f.stroke || flick) f.phase = (f.phase + dt * TAU * frequency) % TAU;
-      f.finPhase = (f.finPhase + dt * TAU * (2.1 + f.effort * 1.5)) % TAU;
+      f.finPhase =
+        (f.finPhase + dt * TAU * (2.1 + f.effort * 1.5 + f.scull * 5.5)) % TAU;
       const batch = batches.get(f.species) ?? batches.get(species.key);
       const slot = batch.used++;
       batch.swimAttribute.setXYZW(
@@ -1866,56 +2126,6 @@ export function createFishSchool(
   return {
     update,
     fish,
-    // Take one fish out of the tank for good: the live school and the durable record lose
-    // it together, exactly once, keyed by its stable id. Returns false if no such fish is
-    // here (already taken, or never was), so a caller cannot count a catch twice. Live
-    // fish mirror the records by index, so both arrays shift as one, and the render slots
-    // above the gap are rewritten now rather than showing a stale fish for a frame.
-    remove(sid) {
-      const index = fish.findIndex((f) => f.sid === sid);
-      if (index < 0 || state.fish[index]?.id !== sid) return false;
-      const [gone] = fish.splice(index, 1);
-      state.fish.splice(index, 1);
-      const at = initialPositions.indexOf(gone.position);
-      if (at >= 0) initialPositions.splice(at, 1);
-      for (const f of fish) if (f.recruiter === gone) f.recruiter = null;
-      for (let i = index; i < fish.length; i++) fish[i].id = i;
-      // Shift just this species' render slots. Running the swim step again here would
-      // change the other fish's choices during a turtle strike.
-      const batch = batches.get(gone.species) ?? batches.get(species.key);
-      const slot = fish.slice(0, index).filter((f) => f.species === gone.species).length;
-      for (let i = slot; i < batch.bodies.count - 1; i++) {
-        batch.bodies.getMatrixAt(i + 1, instance);
-        batch.bodies.setMatrixAt(i, instance);
-        batch.membranes.setMatrixAt(i, instance);
-        batch.swimAttribute.setXYZW(i, batch.swimAttribute.getX(i + 1), batch.swimAttribute.getY(i + 1),
-          batch.swimAttribute.getZ(i + 1), batch.swimAttribute.getW(i + 1));
-        batch.finPhaseAttribute.setX(i, batch.finPhaseAttribute.getX(i + 1));
-      }
-      batch.bodies.count--;
-      batch.membranes.count--;
-      batch.used = batch.bodies.count;
-      batch.bodies.instanceMatrix.needsUpdate = true;
-      batch.membranes.instanceMatrix.needsUpdate = true;
-      batch.swimAttribute.needsUpdate = true;
-      batch.finPhaseAttribute.needsUpdate = true;
-      taken++;
-      return true;
-    },
-    // Something sudden happened at `point` (a turtle's jaws closing): every fish near it
-    // that can still be startled makes a C-start away, and the usual contagion carries the
-    // alarm on through the shoal. Returns how many fish broke directly.
-    scatter(point, radius = 2.2) {
-      let count = 0;
-      for (const f of fish) {
-        if (f.mode === "escape" || f.pendingEscape || elapsed < f.refractoryUntil) continue;
-        if (f.position.distanceTo(point) > radius) continue;
-        startEscape(f, escapeDirection(f, point, delta));
-        count++;
-      }
-      scatters += count;
-      return count;
-    },
     // The durable population for this tank, as pure data a host can store: each fish's
     // stable id, species key, current running age and remaining breeding cooldown, plus
     // the tank-wide birth cooldown. Everything else in `fish` is render state and never
@@ -1925,7 +2135,6 @@ export function createFishSchool(
       return {
         version: SAVE_VERSION,
         breedIn: state.breedIn,
-        ...(state.stocked ? { stocked: true } : {}),
         fish: state.fish.map((r) => ({
           id: r.id,
           species: r.species,
@@ -1936,13 +2145,15 @@ export function createFishSchool(
       };
     },
     getTelemetry() {
-      const states = { hover: 0, travel: 0, settle: 0, inspect: 0, feed: 0, escape: 0 };
+      const states = { hover: 0, travel: 0, settle: 0, inspect: 0, feed: 0, escape: 0, perch: 0 };
       let twitching = 0,
         totalSpeed = 0,
         maximumSpeed = 0,
-        foraging = 0;
+        foraging = 0,
+        breathing = 0;
       for (const f of fish) {
         states[f.mode]++;
+        if (f.breathing) breathing++;
         if (f.flick && f.mode !== "escape") twitching++;
         if (f.foraging > APPETITE.searching) foraging++;
         const speed = f.velocity.length();
@@ -1957,9 +2168,8 @@ export function createFishSchool(
         maximumSpeed,
         pointerResponses: startled,
         escapes,
-        scatters,
-        taken,
         foraging,
+        breathing,
         strikes,
         bites,
         simulationTime: elapsed,

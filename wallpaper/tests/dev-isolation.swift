@@ -16,7 +16,7 @@ struct DevIsolationTests {
     check(!paths.support.path.contains("/Desktop Habitats/tanks"), "dev support does not use production tank path")
 
     if let options = try? DevOptions(arguments: [
-      "--windowed", "--diagnostics", "--verify", "--scenario", "hunt-hit",
+      "--windowed", "--diagnostics", "--verify", "--scenario", "growth",
       "--seed=42", "--run", "test-run", "--snapshot",
     ]) {
       check(options.mode == .windowed, "windowed is an explicit supported mode")
@@ -24,7 +24,7 @@ struct DevIsolationTests {
       check(options.snapshot, "visual snapshot capture is opt-in")
       check(options.queryItems.contains { $0.0 == "diagnostics" && $0.1 == "1" }, "diagnostics query is dev-only")
       check(options.queryItems.contains { $0.0 == "verify" && $0.1 == "1" }, "verification query is dev-only")
-      check(options.queryItems.contains { $0.0 == "scenario" && $0.1 == "hunt-hit" }, "scenario query is allow-listed")
+      check(options.queryItems.contains { $0.0 == "scenario" && $0.1 == "growth" }, "scenario query is allow-listed")
       check(!options.queryItems.contains { $0.0 == "url" }, "arbitrary URL flags are not accepted")
     } else {
       check(false, "dev options parse")

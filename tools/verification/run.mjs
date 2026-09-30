@@ -9,8 +9,8 @@ import { deserializeReport, readChecklist, renderReportHtml, serializeReport } f
 
 const execFileAsync = promisify(execFile);
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
-const DEFAULT_SCENARIOS = ['fresh', 'legacy-save', 'growth', 'full-tank', 'turtle-rest', 'turtle-walk', 'turtle-breathe', 'hunt-hit', 'hunt-miss', 'prey-loss', 'minimum-population'];
-const PERFORMANCE_SCENARIOS = ['fresh', 'full-tank', 'turtle-rest', 'hunt-hit'];
+const DEFAULT_SCENARIOS = ['fresh', 'legacy-save', 'growth', 'full-tank'];
+const PERFORMANCE_SCENARIOS = ['fresh', 'full-tank'];
 const SAFE_ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,80}$/;
 
 export function makeSafeRunId(value = `verify-${new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)}`) {
@@ -99,8 +99,8 @@ export function equalJson(a, b) {
   return stableJson(a) === stableJson(b);
 }
 
-// Fish ages round to milliseconds in the save format. Larger changes (especially
-// hunger, which is only 0..1) must not hide behind a one-second blanket tolerance.
+// Fish ages round to milliseconds in the save format. Larger changes must not hide
+// behind a one-second blanket tolerance.
 export function durableSnapshotEqual(a, b, tolerance = 0.001) {
   if (a === b) return true;
   if (typeof a === 'number' && typeof b === 'number') return Number.isFinite(a) && Number.isFinite(b) && Math.abs(a - b) <= tolerance;
@@ -150,7 +150,7 @@ export function makeScenarioAssertions({ initial, paused, stepped, still, played
 }
 
 function help() {
-  return `Riverscape verification runner\n\nUsage: node tools/verification/run.mjs [options]\n\n  --start             launch a temporary server and isolated Chrome\n  --performance       paced measurements only (fresh, full-tank, turtle-rest, hunt-hit)\n  --smoke             run the first selected scenario only\n  --scenario a,b      select scenario ids\n  --no-video          skip MediaRecorder clips\n  --checks FILE       include parent repo check provenance and copy logs\n  --base URL --debug URL --out DIR --run ID --seed N\n  --duration MS       clip length (default 2000; hunts at least 5000, breath trips 40000; max 60000)\n  --warmup MS --measure MS  paced performance timings\n  --headful           show the dedicated Chrome window (default; never uses your profile)\n  --headless           use headless Chrome only when a display is unavailable\n`;
+  return `Riverscape verification runner\n\nUsage: node tools/verification/run.mjs [options]\n\n  --start             launch a temporary server and isolated Chrome\n  --performance       paced measurements only (fresh, full-tank)\n  --smoke             run the first selected scenario only\n  --scenario a,b      select scenario ids\n  --no-video          skip MediaRecorder clips\n  --checks FILE       include parent repo check provenance and copy logs\n  --base URL --debug URL --out DIR --run ID --seed N\n  --duration MS       clip length (default 2000; max 60000)\n  --warmup MS --measure MS  paced performance timings\n  --headful           show the dedicated Chrome window (default; never uses your profile)\n  --headless           use headless Chrome only when a display is unavailable\n`;
 }
 
 class Cdp {
@@ -365,25 +365,10 @@ async function browserInfo(cdp, options) {
   return { chrome: cdp.browserVersion?.Browser || 'unknown', userAgent: device.userAgent, viewport: { width: options.width, height: options.height, deviceScaleFactor: options.dpr }, resolution: { scale: device.stats?.resolution ?? null, framebuffer: device.stats?.framebuffer ?? null }, gpu, page: { innerWidth: device.innerWidth, innerHeight: device.innerHeight, devicePixelRatio: device.devicePixelRatio, hidden: device.hidden }, platform: process.platform, node: process.version };
 }
 
-async function checkInterruptedHunt(cdp) {
-  await resetThroughApi(cdp);
-  let before = await callVerification(cdp, 'state');
-  // Step the real engine into a lunge, then reload while it is paused mid-strike.
-  for (let i = 0; i < 80 && before.stats?.turtle?.phase !== 'strike'; i++) {
-    before = await callVerification(cdp, 'step', 3);
-  }
-  await reloadThroughApi(cdp);
-  const after = await callVerification(cdp, 'state');
-  return { before, after, check: assertion('mid-strike-reload', 'Reload mid-strike grants no catch',
-    before.stats?.turtle?.phase === 'strike' && after.stats?.turtle?.phase === 'idle' &&
-    durableSnapshotEqual(before.snapshot, after.snapshot),
-    `phase ${before.stats?.turtle?.phase} → ${after.stats?.turtle?.phase}`) };
-}
-
 async function runScenario(cdp, options, scenario, meta, output) {
   const url = scenarioUrl(options.base, { scenario, seed: options.seed, run: options.run });
   cdp.clearEvents();
-  const screenshots = []; const lifecycleChecks = []; let interruptedHunt = null; let resolvedReload = null; let recording = null; let timeout = false; let initial = null; let paused = null; let stepped = null; let still = null; let played = null; let beforeReload = null; let afterReload = null; let normalStorageBefore = null; let normalStorageAfter = null; let screenshotsReady = { fresh: false, final: false }; let apiReady = false; let listed = false; let failure = null;
+  const screenshots = []; const lifecycleChecks = []; let recording = null; let timeout = false; let initial = null; let paused = null; let stepped = null; let still = null; let played = null; let beforeReload = null; let afterReload = null; let normalStorageBefore = null; let normalStorageAfter = null; let screenshotsReady = { fresh: false, final: false }; let apiReady = false; let listed = false; let failure = null;
   try {
     await cdp.navigate(url, options); initial = await waitForVerification(cdp); apiReady = true;
     try { normalStorageBefore = await cdp.call(() => ({ value: globalThis.localStorage?.getItem('desktop-habitats/tank:v1') ?? null }), {}); } catch (error) { normalStorageBefore = { error: error.message }; }
@@ -393,16 +378,12 @@ async function runScenario(cdp, options, scenario, meta, output) {
     try { await cdp.waitFor(async () => Number((await callVerification(cdp, 'state'))?.simulationTime) > Number(still?.simulationTime) + 1 / 120, 2000, 'play simulation'); } catch { /* The assertion below records a real stalled play instead of hiding it. */ }
     played = await callVerification(cdp, 'pause');
     await callVerification(cdp, 'save'); beforeReload = await callVerification(cdp, 'state'); await reloadThroughApi(cdp); afterReload = await callVerification(cdp, 'state');
-    if (scenario === 'hunt-hit' || scenario === 'hunt-miss') {
-      interruptedHunt = await checkInterruptedHunt(cdp);
-      lifecycleChecks.push(interruptedHunt.check);
-    }
     await resetThroughApi(cdp); await cdp.page('Page.bringToFront');
     const shotDir = join(output, 'screenshots'); const videoDir = join(output, 'videos'); await mkdir(shotDir, { recursive: true }); await mkdir(videoDir, { recursive: true });
     const freshRender = await waitForRenderedFrame(cdp); screenshotsReady.fresh = true;
     screenshots.push({ label: 'fresh-fixture', ...(await captureScreenshot(cdp, join(shotDir, `${scenario}-fresh.png`), freshRender)) });
     if (!options.noVideo) {
-      const clipDuration = scenario.startsWith('hunt-') ? Math.max(options.duration, 5000) : scenario === 'turtle-breathe' ? Math.max(options.duration, 40000) : options.duration;
+      const clipDuration = options.duration;
       console.log(`  Recording ${clipDuration / 1000}s at normal speed…`);
       const video = await captureVideo(cdp, Math.min(clipDuration, 60000));
       if (video.supported && video.base64) {
@@ -410,24 +391,15 @@ async function runScenario(cdp, options, scenario, meta, output) {
       } else recording = { supported: false, reason: video.reason || 'Recording returned no data.' };
     } else recording = { supported: false, reason: 'Skipped by --no-video.' };
     await callVerification(cdp, 'play');
-    const completed = await waitForScenarioChecks(cdp, scenario.startsWith('hunt-') ? 15000 : Math.max(1000, options.duration)); timeout = completed.timeout; const finalState = await callVerification(cdp, 'pause');
+    const completed = await waitForScenarioChecks(cdp, Math.max(1000, options.duration)); timeout = completed.timeout; const finalState = await callVerification(cdp, 'pause');
     const finalRender = await waitForRenderedFrame(cdp); screenshotsReady.final = true;
     screenshots.push({ label: 'after-run', ...(await captureScreenshot(cdp, join(shotDir, `${scenario}-final.png`), finalRender)) });
     const checks = (finalState?.checks || []).map(check => ({ id: `scene-check-${check.id}`, label: check.label || check.id, status: ['passed', 'failed', 'not-exercised'].includes(check.status) ? check.status : 'not-exercised', detail: check.detail }));
-    if (scenario === 'hunt-hit' || scenario === 'hunt-miss') {
-      const before = await callVerification(cdp, 'state');
-      await reloadThroughApi(cdp);
-      const after = await callVerification(cdp, 'state');
-      resolvedReload = { before, after };
-      lifecycleChecks.push(assertion('resolved-hunt-reload', 'Reload retains the result, hunger and cooldown',
-        durableSnapshotEqual(before.snapshot, after.snapshot) && after.stats?.turtle?.snaps === 0,
-        `fish ${before.snapshot.fish.length} → ${after.snapshot.fish.length}; no catch replayed`));
-    }
     const contextErrors = cdp.contextErrors();
     try { normalStorageAfter = await cdp.call(() => ({ value: globalThis.localStorage?.getItem('desktop-habitats/tank:v1') ?? null }), {}); } catch (error) { normalStorageAfter = { error: error.message }; }
     const assertions = makeScenarioAssertions({ initial, paused, stepped, still, played, beforeReload, afterReload, recording, normalStorageBefore, normalStorageAfter, screenshotsReady, contextErrors, apiReady, listed, timeout });
     const allAssertions = [...assertions, ...checks, ...lifecycleChecks];
-    return { id: scenario, title: meta?.title || scenario, description: meta?.description || 'Scenario metadata was not supplied by the scene.', url, status: overallStatus(allAssertions), assertions: allAssertions, captures: { screenshots, recording }, metadata: finalState?.metadata || initial?.metadata || {}, states: { initial, paused, stepped, still, played, beforeReload, afterReload, final: finalState, interruptedHunt, resolvedReload, normalStorageBefore, normalStorageAfter }, events: finalState?.events || [], errors: contextErrors };
+    return { id: scenario, title: meta?.title || scenario, description: meta?.description || 'Scenario metadata was not supplied by the scene.', url, status: overallStatus(allAssertions), assertions: allAssertions, captures: { screenshots, recording }, metadata: finalState?.metadata || initial?.metadata || {}, states: { initial, paused, stepped, still, played, beforeReload, afterReload, final: finalState, normalStorageBefore, normalStorageAfter }, events: finalState?.events || [], errors: contextErrors };
   } catch (error) {
     failure = error;
     const contextErrors = cdp.contextErrors();

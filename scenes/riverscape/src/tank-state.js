@@ -45,9 +45,11 @@ export const MAX_SAVED_FISH = 128;
 // current POPULATION_CAP tuning says. v1 needs this history, not the live cap, so that a
 // later tuning change to POPULATION_CAP can never shift what an old file means.
 export const LEGACY_V1_COUNT = 24;
-// Rendering and save room includes the old 24-fish population plus nine corys and one
-// gourami. Births still stop at POPULATION_CAP, even if an upgraded tank has more fish.
-export const CAPACITY = Math.max(LEGACY_V1_COUNT + 10, POPULATION_CAP);
+// Rendering and save room includes the old 24-fish population plus the groups stocked
+// later: nine corys, one gourami and six hatchetfish. Births still stop at
+// POPULATION_CAP, even if an upgraded tank has more fish.
+export const STOCKED_COUNT = 16;
+export const CAPACITY = Math.max(LEGACY_V1_COUNT + STOCKED_COUNT, POPULATION_CAP);
 // The oldest age a saved fish may claim. Clamped on write (roundAge) and enforced on read
 // so a corrupt or hostile value can never become Infinity or NaN in a record. It sits far
 // above any age running time could reach; it exists to keep rounding and validation
@@ -72,7 +74,9 @@ export function uid(now = Date.now()) {
 }
 
 /** The externally visible species keys the reader knows how to render. */
-export const SPECIES_KEYS = Object.freeze([DEFAULT_SPECIES, "pygmy-corydoras", "honey-gourami"]);
+export const SPECIES_KEYS = Object.freeze([
+  DEFAULT_SPECIES, "pygmy-corydoras", "honey-gourami", "marbled-hatchetfish",
+]);
 
 // Age is running simulation time in seconds: time that actually passed while this tank
 // was being drawn. It is what the school grows and matures a fish on, and a baby's whole
@@ -85,30 +89,6 @@ export function roundAge(age) {
   // (a fresh fish); a finite value is clamped to the accepted age bound so rounding is safe.
   if (!Number.isFinite(n)) return 0;
   return Math.round(Math.min(Math.max(n, 0), MAX_AGE_SECONDS) * 1000) / 1000;
-}
-
-// The most hunger a turtle can carry (a fraction), and the longest cooldown remainder a
-// record may claim, so a corrupt value can never become Infinity or NaN in a save.
-export const MAX_TURTLE_COOLDOWN = MAX_AGE_SECONDS;
-
-/** A snapping turtle's durable record: an opaque identity plus its hunting clocks (issue
- * 04). `hunger` is 0..1; `feedIn` and `retryIn` are the running-second remainders of the
- * after-meal and after-miss cooldowns (0 means ready), and `breathIn` the remainder until
- * the next trip to the surface, all continued on reload rather than re-fired. The hunt phase itself is live state and is not saved: a reload lands the turtle
- * at rest with these clocks, so an interrupted lunge neither lands nor repeats. Its resting
- * spot and rest/shuffle phase are render state too, as a fish's swimming position is. */
-export function turtleRecord(id, hunger = 0, feedIn = 0, retryIn = 0, breathIn = null) {
-  const clock = (v) => Math.round(Math.min(Math.max(Number(v) || 0, 0), MAX_TURTLE_COOLDOWN) * 1000) / 1000;
-  const record = {
-    id: String(id),
-    hunger: Math.round(Math.min(Math.max(Number(hunger) || 0, 0), 1) * 1000) / 1000,
-    feedIn: clock(feedIn),
-    retryIn: clock(retryIn),
-  };
-  // Running seconds until the next breath. Absent means "unknown": the live turtle draws
-  // a fresh interval rather than surfacing the moment an older save loads.
-  if (breathIn !== null && breathIn !== undefined) record.breathIn = clock(breathIn);
-  return record;
 }
 
 /** A single fish's durable record. `breedIn` is the adult's remaining cooldown in running
@@ -140,14 +120,10 @@ export function createPopulation({
   breedIn = 0,
   tankBreedIn = TANK_BREED_COOLDOWN,
   id = uid,
-  turtleId = uid,
 } = {}) {
   const fish = [];
   for (let i = 0; i < count; i++) fish.push(fishRecord(id(), species, age, breedIn, true));
-  // A brand-new tank starts with one turtle, so it is an environment that already owns it
-  // (issue 03: one turtle per tank, including existing tanks). `turtleId` is a separate
-  // maker so a deterministic test can drive the two identities independently.
-  return { version: SAVE_VERSION, breedIn: tankBreedIn, turtle: turtleRecord(turtleId()), fish };
+  return { version: SAVE_VERSION, breedIn: tankBreedIn, fish };
 }
 
 // A v1 save is exactly the old fixed population: LEGACY_V1_COUNT (24) fish with only id,
@@ -292,44 +268,10 @@ export function validate(value) {
     }
     tankBreedIn = value.breedIn;
   }
-  // The turtle is optional: v1/v2 saves and hand-built records carry none, and the live
-  // layer mints one turtle for such a tank (which is how an existing tank gets its first
-  // turtle without ever getting a second one). When a turtle field is present it must
-  // expose a real non-blank id, never coerced. A malformed turtle is deliberately dropped
-  // (turtle: null) rather than refusing the whole save: a turtle is regenerable, and
-  // refusing over a corruption in one field would unfairly throw away every fish. The
-  // hunting clocks (issue 04) are optional on top of the id -- an issue-03 record has none
-  // and reads as a turtle with the default hunger and no cooldown -- and when present each
-  // must be a real finite non-negative number; a bad clock likewise drops only the turtle.
-  // Other extra turtle fields are ignored exactly the way a record's extra fields are.
-  let turtle = null;
-  if (value.turtle !== undefined && value.turtle !== null) {
-    const t = value.turtle;
-    if (
-      t &&
-      typeof t === "object" &&
-      !Array.isArray(t) &&
-      typeof t.id === "string" &&
-      t.id.trim()
-    ) {
-      const clocks = ["hunger", "feedIn", "retryIn", "breathIn"].map((key) => {
-        if (t[key] === undefined) return null;
-        if (typeof t[key] !== "number" || !Number.isFinite(t[key]) || t[key] < 0) return NaN;
-        return t[key];
-      });
-      if (!clocks.some(Number.isNaN)) {
-        // Absent hunger is "unknown": leave it undefined so the live turtle applies its
-        // own default rather than reading an old save as a turtle that has just eaten.
-        turtle = turtleRecord(t.id, clocks[0] ?? 0, clocks[1] ?? 0, clocks[2] ?? 0, clocks[3]);
-        if (clocks[0] === null) delete turtle.hunger;
-      }
-    }
-  }
-  const state = { version: SAVE_VERSION, breedIn: tankBreedIn, fish };
-  // Once stocked, a fish caught by the turtle must not return on the next launch.
-  if (value.stocked === true) state.stocked = true;
-  if (turtle) state.turtle = turtle;
-  return { ok: true, state };
+  // Earlier v3 saves also carried a `turtle` record and a `stocked` flag for the snapping
+  // turtle that has since been removed from the tank. Both are ignored here exactly the way
+  // any other extra field is, so those saves still read and keep every fish.
+  return { ok: true, state: { version: SAVE_VERSION, breedIn: tankBreedIn, fish } };
 }
 
 /**

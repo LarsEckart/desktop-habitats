@@ -672,14 +672,23 @@ function coryBarbel(points, radius) {
 // Corys have a broad, armored head and a low belly rather than a tetra's narrow,
 // even-sided profile. Shape the whole rig together so the eyes, mouth and barbels
 // remain attached to the skin when the fish swims.
+// The head is then reshaped as a catfish's: the forehead falls steeply from the nape and
+// the snout bends down so the mouth sits under it, not at its tip. Both are smooth
+// fields that fade to nothing inside the orbit, so the eye keeps its shape and place
+// while the skin around it follows.
 function shapeCory(geometry) {
   const positions = geometry.getAttribute("position");
   for (let i = 0; i < positions.count; i++) {
     const x = positions.getX(i);
-    const y = positions.getY(i);
+    let y = positions.getY(i);
     const z = positions.getZ(i);
     const head = THREE.MathUtils.smoothstep(x, 0.09, 0.32);
     const tail = 1 - THREE.MathUtils.smoothstep(x, -0.23, 0.04);
+    const orbit = Math.hypot((x - EYE.x) / EYE.radiusX, (y - EYE.y) / EYE.radiusY);
+    const skin = THREE.MathUtils.smoothstep(orbit, 1.05, 1.7);
+    const forehead = y > 0 ? y * 0.38 * THREE.MathUtils.smoothstep(x, 0.2, 0.35) : 0;
+    const snout = 0.03 * Math.pow(THREE.MathUtils.smoothstep(x, 0.25, 0.35), 1.5);
+    y -= (forehead + snout) * skin;
     const underside = y < 0 ? y * (0.75 + 0.14 * head) : y * (1.08 - 0.20 * tail);
     positions.setXYZ(i, x, underside - head * 0.018, z * (1 + 0.32 * head - 0.12 * tail));
   }
@@ -688,7 +697,34 @@ function shapeCory(geometry) {
   return geometry;
 }
 
-export function makeAnatomy({ gourami = false, cory = false } = {}) {
+// A hatchetfish carries its whole body depth below the spine: the chest and belly form
+// a deep, thin keel from the throat to the anal fin, while the back stays straight and
+// the head, eye and mouth keep the standard shape. The keel is deepest under the
+// pectorals and rises steeply into the anal fin, then thins to a knife edge. Only tissue
+// more than a lip's height below the spine is stretched, so the eye and mouth stay put.
+function shapeHatchet(geometry) {
+  const positions = geometry.getAttribute("position");
+  for (let i = 0; i < positions.count; i++) {
+    const x = positions.getX(i);
+    const y = positions.getY(i);
+    const z = positions.getZ(i);
+    // Ahead of the deepest point the keel follows a circle, so it drops almost
+    // vertically behind the gill cover; behind it, it eases into the anal fin.
+    const keel = x > 0.09
+      ? Math.sqrt(Math.max(0, 1 - ((x - 0.09) / 0.235) ** 2))
+      : Math.exp(-(((x - 0.09) / 0.14) ** 2));
+    const below = Math.max(0, -y - 0.022);
+    const deepened = y - 1.7 * keel * below;
+    const thinned = 1 - 0.42 * keel * Math.min(1, below / 0.08);
+    const flatBack = y > 0 ? 1 - 0.1 * keel : 1;
+    positions.setXYZ(i, x, deepened * flatBack, z * thinned);
+  }
+  positions.needsUpdate = true;
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
+export function makeAnatomy({ gourami = false, cory = false, hatchet = false } = {}) {
   const opaque = geometryBuilder();
   const membranes = geometryBuilder();
   opaque.add(bodyGeometry(), 0);
@@ -768,8 +804,21 @@ export function makeAnatomy({ gourami = false, cory = false } = {}) {
     membranes,
   );
 
+  // A hatchetfish's dorsal is a small fin set far back, over the keel's rise.
+  if (hatchet) finFan(
+    {
+      part: 2,
+      base: medianInsertion(-0.095, -0.165, 5, true, 0.005),
+      tip: [
+        [-0.095, 0.108, 0], [-0.118, 0.128, 0], [-0.145, 0.118, 0],
+        [-0.168, 0.088, 0],
+      ],
+      edge: 0.016,
+    },
+    membranes,
+  );
   // The cory's leading dorsal spine rises over the shoulder, with a short base.
-  if (cory) finFan(
+  else if (cory) finFan(
     {
       part: 2,
       base: medianInsertion(0.09, -0.035, 6, true, 0.006),
@@ -813,8 +862,22 @@ export function makeAnatomy({ gourami = false, cory = false } = {}) {
     membranes,
   );
 
+  // The hatchetfish's anal fin runs the whole rising rear edge of the keel. Its points
+  // are given on the undeformed body; shapeHatchet carries fin and keel down together.
+  if (hatchet) finFan(
+    {
+      part: 3,
+      base: medianInsertion(0.03, -0.225, 12, false, 0.006),
+      tip: [
+        [0.03, -0.118, 0], [-0.02, -0.13, 0], [-0.08, -0.133, 0],
+        [-0.14, -0.125, 0], [-0.19, -0.105, 0], [-0.225, -0.075, 0],
+      ],
+      edge: 0.012,
+    },
+    membranes,
+  );
   // A cory's short anal fin sits close to the tail, not along the belly.
-  if (cory) finFan(
+  else if (cory) finFan(
     {
       part: 3,
       base: medianInsertion(-0.16, -0.235, 5, false, 0.005),
@@ -859,8 +922,8 @@ export function makeAnatomy({ gourami = false, cory = false } = {}) {
     membranes,
   );
 
-  // Gouramis have no adipose fin; keep it only on the tetra-shaped rig.
-  if (!gourami) finFan(
+  // Gouramis and hatchetfish have no adipose fin; keep it only on the tetra-shaped rig.
+  if (!gourami && !hatchet) finFan(
     {
       part: 12,
       base: medianInsertion(-0.178, -0.206, 3, true, 0.004),
@@ -876,9 +939,39 @@ export function makeAnatomy({ gourami = false, cory = false } = {}) {
   );
 
   for (const side of [-1, 1]) {
+    // Hatchetfish pectorals are wings: inserted high on the shoulder at eye level, with
+    // long leading rays swept up and back over the body and held out from the flank.
+    if (hatchet) finFan(
+      {
+        part: side > 0 ? 4 : 5,
+        base: insertion(
+          [
+            [0.184, 0.018],
+            [0.172, 0.0],
+            [0.158, -0.02],
+          ],
+          side,
+        ),
+        // A sickle: the leading rays are longest, and the trailing margin curves back
+        // toward the root, so the wing is about a third as broad as it is long.
+        tip: [
+          [0.02, 0.19, side * 0.075],
+          [-0.03, 0.165, side * 0.085],
+          [-0.06, 0.12, side * 0.08],
+          [-0.05, 0.075, side * 0.065],
+          [-0.01, 0.045, side * 0.05],
+          [0.06, 0.025, side * 0.035],
+        ],
+        sway: side * 0.003,
+        roll: side * 0.004,
+        edge: 0.02,
+        root: 0.005,
+      },
+      membranes,
+    );
     // Pectorals inserted low and just behind the opercular margin, reaching back to
     // the pelvic origin.
-    finFan(
+    else finFan(
       {
         part: side > 0 ? 4 : 5,
         base: insertion(
@@ -941,7 +1034,9 @@ export function makeAnatomy({ gourami = false, cory = false } = {}) {
 
   const body = opaque.finish();
   const fins = membranes.finish();
-  return cory ? { body: shapeCory(body), fins: shapeCory(fins) } : { body, fins };
+  if (cory) return { body: shapeCory(body), fins: shapeCory(fins) };
+  if (hatchet) return { body: shapeHatchet(body), fins: shapeHatchet(fins) };
+  return { body, fins };
 }
 
 // Colour, scales, guanine sheen and fin membranes in the fragment stage. The vertex
