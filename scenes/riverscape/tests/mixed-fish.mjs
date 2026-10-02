@@ -5,18 +5,18 @@ const THREE = await import("three");
 const { createFishSchool, COUNT } = await import("../src/fish.js");
 const { createPopulation, parse, serialize, CAPACITY, STOCKED_COUNT } = await import("../src/tank-state.js");
 const { breedMany } = await import("../src/breeding.js");
-const { bloodfinTetra, pygmyCory, honeyGourami, marbledHatchetfish } = await import("../src/fish-species.js");
+const { bloodfinTetra, pygmyCory, marbledHatchetfish } = await import("../src/fish-species.js");
 
 const KEYS = ["bloodfin-tetra", "pygmy-corydoras", "honey-gourami", "marbled-hatchetfish"];
 const FRESH = { "bloodfin-tetra": 8, "pygmy-corydoras": 9, "honey-gourami": 1, "marbled-hatchetfish": 6 };
 assert.equal(Object.values(FRESH).reduce((a, b) => a + b) - FRESH["bloodfin-tetra"], STOCKED_COUNT);
 
-// Each species needs its own shape, not a tinted copy of the tetra's mesh: the gourami a
-// long dorsal, a broad anal skirt and two pelvic feelers; the cory a low armored body,
-// short fins and barbels; the hatchetfish a deep thin keel and wing-like pectorals.
+// Species on the shared rig need their own shape, not a tinted tetra: the cory a low
+// armored body, short fins and barbels; the hatchetfish a deep thin keel and wing-like
+// pectorals. The gourami's actual geometry belongs to its bespoke renderer and is checked
+// on the constructed scene below.
 const tetraMesh = bloodfinTetra.createAnatomy();
 const coryMesh = pygmyCory.createAnatomy();
-const gouramiMesh = honeyGourami.createAnatomy();
 const hatchetMesh = marbledHatchetfish.createAnatomy();
 function partRange(geometry, part) {
   const position = geometry.getAttribute("position");
@@ -29,17 +29,13 @@ function partRange(geometry, part) {
   }
   return { count: ys.length, low: Math.min(...ys), high: Math.max(...ys), rear: Math.min(...xs), width: Math.max(...zs) };
 }
-assert.ok(partRange(gouramiMesh.fins, 2).rear < partRange(tetraMesh.fins, 2).rear - 0.1);
 assert.ok(partRange(coryMesh.fins, 3).rear < partRange(tetraMesh.fins, 3).rear - 0.02,
   "cory anal fin sits near the tail");
 assert.ok(partRange(coryMesh.fins, 2).high > partRange(tetraMesh.fins, 2).high,
   "cory dorsal spine rises above the tetra fin");
 assert.ok(partRange(coryMesh.fins, 1).rear > partRange(tetraMesh.fins, 1).rear + 0.02,
   "cory tail is shorter than the tetra's fork");
-assert.ok(partRange(gouramiMesh.fins, 3).low < partRange(tetraMesh.fins, 3).low);
-assert.ok(partRange(gouramiMesh.body, 6).low < -0.3, "pelvic feelers reach below the belly");
-assert.equal(partRange(gouramiMesh.fins, 12).count, 0, "gouramis have no adipose fin");
-for (const mesh of [tetraMesh, gouramiMesh, hatchetMesh])
+for (const mesh of [tetraMesh, hatchetMesh])
   assert.equal(partRange(mesh.body, 13).count, 0, "only corys grow barbels");
 const whiskers = coryMesh.body;
 const parts = whiskers.getAttribute("aPart");
@@ -74,7 +70,7 @@ for (const part of [7, 8, 9, 11]) {
   const a = partRange(tetraMesh.body, part), b = partRange(hatchetMesh.body, part);
   assert.ok(Math.abs(a.low - b.low) < 0.004 && Math.abs(a.high - b.high) < 0.004, `part ${part} is left alone`);
 }
-for (const mesh of [tetraMesh, coryMesh, gouramiMesh, hatchetMesh]) {
+for (const mesh of [tetraMesh, coryMesh, hatchetMesh]) {
   mesh.body.dispose();
   mesh.fins.dispose();
 }
@@ -84,7 +80,10 @@ const school = createFishSchool(scene, { stockNewSpecies: true });
 const counts = (s) => Object.fromEntries(KEYS.map((key) => [key, s.fish.filter((fish) => fish.species === key).length]));
 assert.deepEqual(counts(school), FRESH);
 assert.equal(scene.getObjectByName("Pygmy corydoras").count, 9);
-assert.equal(scene.getObjectByName("Honey gourami").count, 1);
+assert.ok(scene.getObjectByName("Honey gourami bespoke rig"),
+  "the gourami renders through its species-owned rig rather than an instanced batch");
+assert.ok(scene.getObjectByName("Honey gourami articulated dorsal fin"));
+assert.ok(scene.getObjectByName("Honey gourami left pectoral fin"));
 assert.equal(scene.getObjectByName("Marbled hatchetfish").count, 6);
 assert.ok(school.fish.filter((f) => f.species === "pygmy-corydoras").every((f) => f.position.y < 2));
 assert.ok(school.fish.filter((f) => f.species === "marbled-hatchetfish").every((f) => f.position.y > 6.5),
@@ -198,4 +197,4 @@ assert.equal(breedMany(solo, 1).born, false, "a lone gourami cannot breed itself
 const wings = { breedIn: 0, fish: Array.from({ length: 6 }, (_, i) => ({ id: `h${i}`, species: "marbled-hatchetfish", age: 9000, breedIn: 0, adult: true })) };
 assert.equal(breedMany(wings, 1).born, false, "the hatchetfish group stays the size it was stocked at");
 school.dispose();
-console.log("PASS: mixed fish stocking, four species in separate batches, per-species behaviour (still hatchetfish under the film, corys resting on the sand and surfacing for air, a slow sculling gourami), old saves, no restocking");
+console.log("PASS: mixed fish stocking, shared batches plus bespoke gourami rig, per-species behaviour (still hatchetfish under the film, corys resting on the sand and surfacing for air, a slow sculling gourami), old saves, no restocking");

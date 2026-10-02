@@ -158,6 +158,26 @@ const { randomGenerator } = await import("../src/math.js");
   fish.dispose(); again.dispose();
 }
 {
+  const session = createVerificationSession({
+    query: query({ scenario: "legacy-save", seed: 42, run: "headless-legacy" }),
+    storage: memoryStorage(),
+  });
+  const fish = createFishSchool(new THREE.Scene(), {
+    population: session.fixture,
+    stockNewSpecies: true,
+    random: randomGenerator(42),
+  });
+  session.bind({
+    snapshot: () => fish.snapshotPopulation(), stats: () => ({}), telemetry: () => ({}),
+    paused: () => true, simulationTime: () => 0,
+  });
+  const state = session.state();
+  assert.equal(state.snapshot.fish.length, 24 + STOCKED_COUNT,
+    "scene startup preserves all legacy residents and stocks each newer species once");
+  assert.equal(state.checks.find((check) => check.id === "legacy-count").status, "passed");
+  fish.dispose();
+}
+{
   const full = createFishSchool(new THREE.Scene(), {
     obstacles: [], landmarks: [], thickets: [], population: scenarioFixture("full-tank"),
     stockNewSpecies: true, random: randomGenerator(42),

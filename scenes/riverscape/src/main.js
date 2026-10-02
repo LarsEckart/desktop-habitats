@@ -524,6 +524,19 @@ async function start() {
       reload: () => location.reload(),
     });
     window.habitatVerification = api;
+    // A local visual-review hook for the bespoke animal. Production pages never expose
+    // this; deterministic tests establish transitions, while reviewers can inspect each
+    // representative pose without waiting for a rare surface trip or strike.
+    window.habitatGourami = {
+      modes: ["hover", "curious", "breathe", "feed"],
+      present(mode) {
+        if (!this.modes.includes(mode)) throw new Error(`Unknown gourami mode: ${mode}`);
+        const result = fish.presentBespoke(mode);
+        renderFrame(0, performance.now());
+        return result;
+      },
+      state: () => fish.bespokeDiagnostics(),
+    };
     verificationModule.installVerificationControls(api);
   }
   // Lifecycle saves: capture the population exactly when the tank stops being drawn, so a

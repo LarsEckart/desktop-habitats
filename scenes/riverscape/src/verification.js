@@ -18,7 +18,7 @@ const DEFAULT_RUN = "default";
 
 const SCENARIOS = Object.freeze([
   { id: "fresh", title: "Fresh tank", description: "A new tank with mature fish and an armed birth clock." },
-  { id: "legacy-save", title: "Legacy save", description: "A v1, 24-fish save that must migrate without duplication." },
+  { id: "legacy-save", title: "Legacy save", description: "A v1, 24-fish save that must migrate intact before new species are stocked." },
   { id: "growth", title: "Growth", description: "A newborn baby grows while the tank runs." },
   { id: "full-tank", title: "Full tank", description: "The population cap is full and cannot breed past it." },
 ]);
@@ -112,7 +112,9 @@ function detailsFor(id, snapshot, runtime) {
   if (id === "fresh") add("fresh-count", "Fresh tank starts at its stocked size", count === FRESH_COUNT + STOCKED_COUNT,
     `expected ${FRESH_COUNT + STOCKED_COUNT}, got ${count}`);
   if (id === "legacy-save") {
-    add("legacy-count", "Legacy population preserved", count === 24, `expected 24, got ${count}`);
+    const expected = 24 + STOCKED_COUNT;
+    add("legacy-count", "Legacy population preserved and new species stocked", count === expected,
+      `expected ${expected}, got ${count}`);
     add("legacy-ids", "Legacy IDs preserved", fish[0]?.id === "legacy-fish-0" && fish[23]?.id === "legacy-fish-23",
       "v1 IDs survive migration");
   }
