@@ -80,9 +80,15 @@ const school = createFishSchool(scene, { stockNewSpecies: true });
 const counts = (s) => Object.fromEntries(KEYS.map((key) => [key, s.fish.filter((fish) => fish.species === key).length]));
 assert.deepEqual(counts(school), FRESH);
 assert.equal(scene.getObjectByName("Pygmy corydoras").count, 9);
-assert.ok(scene.getObjectByName("Honey gourami bespoke rig"),
+const gouramiRig = scene.getObjectByName("Honey gourami bespoke rig");
+assert.ok(gouramiRig,
   "the gourami renders through its species-owned rig rather than an instanced batch");
-assert.ok(scene.getObjectByName("Honey gourami articulated dorsal fin"));
+const gouramiBody = scene.getObjectByName("Honey gourami articulated body");
+const gouramiDorsal = scene.getObjectByName("Honey gourami articulated dorsal fin");
+assert.ok(gouramiBody.geometry.attributes.position.count > 2000,
+  "the bespoke body is a continuous parametric surface, not a stretched primitive");
+assert.ok(gouramiDorsal.geometry.attributes.aFinProgress,
+  "the dorsal is an articulated ray field rooted on the body");
 assert.ok(scene.getObjectByName("Honey gourami left pectoral fin"));
 assert.equal(scene.getObjectByName("Marbled hatchetfish").count, 6);
 assert.ok(school.fish.filter((f) => f.species === "pygmy-corydoras").every((f) => f.position.y < 2));

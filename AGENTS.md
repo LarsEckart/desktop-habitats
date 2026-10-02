@@ -1,4 +1,6 @@
 
+Build each fish species with its own anatomy, materials, and characteristic movement; use a bespoke rig when the shared rig cannot preserve those distinctions.
+
 ### Verification workbench
 
 Use `npm run verify` for all named scenarios, or `npm run verify -- --scenario fresh,growth`

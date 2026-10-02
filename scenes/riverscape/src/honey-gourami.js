@@ -25,6 +25,7 @@ const approach = (value, target, rate, dt) =>
   value + (target - value) * (1 - Math.exp(-rate * dt));
 const wrap = (angle) => Math.atan2(Math.sin(angle), Math.cos(angle));
 const smooth = (value) => value * value * (3 - 2 * value);
+const smoothstep = (low, high, value) => smooth(clamp((value - low) / (high - low), 0, 1));
 
 function heading(yaw, pitch, target = new THREE.Vector3()) {
   return target.set(
@@ -321,18 +322,143 @@ export function createHoneyGouramiSimulation({
   };
 }
 
-function finGeometry(points, indices) {
+function makeGeometry(points, indices, uvs, progress = null) {
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute("position", new THREE.Float32BufferAttribute(points.flat(), 3));
+  geometry.setAttribute("aLocal", new THREE.Float32BufferAttribute(points.flat(), 3));
+  geometry.setAttribute("uv", new THREE.Float32BufferAttribute(uvs.flat(), 2));
+  if (progress) geometry.setAttribute("aFinProgress", new THREE.Float32BufferAttribute(progress, 1));
   geometry.setIndex(indices);
   geometry.computeVertexNormals();
   return geometry;
 }
 
-function shapedFin(draw) {
-  const shape = new THREE.Shape();
-  draw(shape);
-  return new THREE.ShapeGeometry(shape, 12);
+function bodyProfile(x) {
+  const u = clamp((0.66 - x) / 1.28, 0, 1);
+  const fullness = Math.pow(Math.sin(Math.PI * u), 0.42);
+  const shoulder = Math.exp(-(((u - 0.26) / 0.22) ** 2));
+  const peduncle = 1 - 0.48 * smooth(clamp((u - 0.72) / 0.28, 0, 1));
+  return {
+    centre: 0.018 - 0.025 * u,
+    upper: fullness * peduncle * (0.205 + 0.055 * shoulder),
+    lower: fullness * peduncle * (0.185 + 0.07 * shoulder),
+    width: fullness * peduncle * (0.092 + 0.018 * shoulder),
+  };
+}
+
+function createBodyGeometry() {
+  const along = 64, around = 36;
+  const points = [], uvs = [], indices = [];
+  for (let i = 0; i <= along; i++) {
+    const u = i / along;
+    const x = 0.66 - 1.28 * u;
+    const profile = bodyProfile(x);
+    for (let j = 0; j <= around; j++) {
+      const v = j / around;
+      const angle = v * Math.PI * 2;
+      const vertical = Math.sin(angle);
+      const depth = vertical >= 0 ? profile.upper : profile.lower;
+      points.push([x, profile.centre + vertical * depth, Math.cos(angle) * profile.width]);
+      uvs.push([u, v]);
+    }
+  }
+  for (let i = 0; i < along; i++) for (let j = 0; j < around; j++) {
+    const a = i * (around + 1) + j, b = a + around + 1;
+    indices.push(a, b, a + 1, b, b + 1, a + 1);
+  }
+  return makeGeometry(points, indices, uvs);
+}
+
+// A fin is a field of curved rays. Every ray starts at an anatomical insertion and the
+// membrane is stitched between it and its neighbours; there are no detached shape cards.
+function finSurface(roots, tips, { steps = 9, cup = 0.012 } = {}) {
+  const points = [], uvs = [], progress = [], indices = [];
+  for (let ray = 0; ray < roots.length; ray++) {
+    const root = new THREE.Vector3(...roots[ray]);
+    const tip = new THREE.Vector3(...tips[ray]);
+    for (let step = 0; step <= steps; step++) {
+      const p = step / steps;
+      const point = root.clone().lerp(tip, p);
+      point.z += Math.sin(Math.PI * p) * cup * Math.sin(ray * 2.35);
+      points.push(point.toArray());
+      uvs.push([ray / (roots.length - 1), p]);
+      progress.push(p);
+    }
+  }
+  for (let ray = 0; ray < roots.length - 1; ray++) for (let step = 0; step < steps; step++) {
+    const a = ray * (steps + 1) + step, b = a + steps + 1;
+    indices.push(a, b, a + 1, b, b + 1, a + 1);
+  }
+  return makeGeometry(points, indices, uvs, progress);
+}
+
+function line(low, high, count, make) {
+  return Array.from({ length: count }, (_, index) => make(low + (high - low) * index / (count - 1), index / (count - 1)));
+}
+
+function skinMaterial() {
+  const material = new THREE.MeshPhysicalMaterial({
+    color: 0xffffff, roughness: 0.48, metalness: 0, clearcoat: 0.1,
+  });
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.uMouth = { value: 0 };
+    shader.uniforms.uBreath = { value: 0 };
+    material.userData.shader = shader;
+    shader.vertexShader = shader.vertexShader
+      .replace("#include <common>", "#include <common>\nattribute vec3 aLocal; varying vec3 vGouramiLocal; varying vec2 vGouramiUV;")
+      .replace("#include <begin_vertex>", "#include <begin_vertex>\nvGouramiLocal = aLocal; vGouramiUV = uv;");
+    shader.fragmentShader = shader.fragmentShader
+      .replace("#include <common>", "#include <common>\nuniform float uMouth; uniform float uBreath; varying vec3 vGouramiLocal; varying vec2 vGouramiUV;")
+      .replace("#include <color_fragment>", /* glsl */ `
+        #include <color_fragment>
+        float back = smoothstep(-0.23, 0.2, vGouramiLocal.y);
+        vec3 honey = mix(vec3(0.58, 0.16, 0.025), vec3(0.93, 0.48, 0.075), back);
+        float scaleRow = floor(vGouramiUV.y * 17.0);
+        vec2 scaleCell = fract(vec2(vGouramiUV.x * 27.0 + mod(scaleRow, 2.0) * 0.5, vGouramiUV.y * 17.0));
+        float scaleRim = smoothstep(0.7, 0.96, length((scaleCell - vec2(0.5, 0.54)) * vec2(1.0, 1.35)) * 2.0);
+        honey *= mix(1.015, 0.955, scaleRim * smoothstep(0.05, 0.18, vGouramiUV.x));
+        float throat = (1.0 - smoothstep(-0.15, 0.08, vGouramiLocal.y))
+          * smoothstep(0.02, 0.24, vGouramiLocal.x)
+          * (1.0 - smoothstep(0.43, 0.58, vGouramiLocal.x));
+        honey = mix(honey, vec3(0.055, 0.075, 0.11), throat * 0.78);
+        float gill = 1.0 - smoothstep(0.006, 0.018,
+          abs(length(vec2((vGouramiLocal.x - 0.27) / 0.11, (vGouramiLocal.y + 0.005) / 0.19)) - 1.0));
+        float mouth = smoothstep(0.53, 0.62, vGouramiLocal.x)
+          * (1.0 - smoothstep(0.008 + uMouth * 0.012, 0.022 + uMouth * 0.018, abs(vGouramiLocal.y + 0.026)));
+        honey = mix(honey, vec3(0.10, 0.045, 0.025), max(gill * 0.45, mouth * 0.9));
+        honey *= 1.0 + uBreath * 0.04 * smoothstep(0.08, 0.34, vGouramiLocal.x);
+        diffuseColor.rgb = honey;
+      `);
+  };
+  material.customProgramCacheKey = () => "bespoke-honey-gourami-skin-v2";
+  return material;
+}
+
+function finMaterial(rayCount, opacity = 0.62) {
+  const material = new THREE.MeshPhysicalMaterial({
+    color: 0xffffff, transparent: true, opacity, roughness: 0.5,
+    side: THREE.DoubleSide, depthWrite: false, transmission: 0.04,
+  });
+  material.onBeforeCompile = (shader) => {
+    shader.vertexShader = shader.vertexShader
+      .replace("#include <common>", "#include <common>\nvarying vec2 vFinUV;")
+      .replace("#include <begin_vertex>", "#include <begin_vertex>\nvFinUV = uv;");
+    shader.fragmentShader = shader.fragmentShader
+      .replace("#include <common>", "#include <common>\nvarying vec2 vFinUV;")
+      .replace("#include <color_fragment>", /* glsl */ `
+        #include <color_fragment>
+        float cells = vFinUV.x * ${rayCount.toFixed(1)};
+        float rayDistance = min(fract(cells), 1.0 - fract(cells));
+        float ray = 1.0 - smoothstep(0.035, 0.16, rayDistance);
+        float root = 1.0 - smoothstep(0.0, 0.28, vFinUV.y);
+        float rim = smoothstep(0.76, 1.0, vFinUV.y);
+        vec3 membrane = mix(vec3(0.78, 0.25, 0.035), vec3(0.97, 0.58, 0.11), vFinUV.y);
+        diffuseColor.rgb = membrane * mix(0.92, 1.08, ray) * mix(1.08, 1.0, root);
+        diffuseColor.a *= mix(0.78, 1.0, ray) * (1.0 - rim * 0.12);
+      `);
+  };
+  material.customProgramCacheKey = () => `bespoke-honey-gourami-fin-${rayCount}-v2`;
+  return material;
 }
 
 export function createHoneyGouramiRenderer(scene, simulation) {
@@ -340,93 +466,70 @@ export function createHoneyGouramiRenderer(scene, simulation) {
   root.name = "Honey gourami bespoke rig";
   scene.add(root);
 
-  const bodyGeometry = new THREE.SphereGeometry(1, 28, 18);
+  const bodyGeometry = createBodyGeometry();
   const baseBody = Float32Array.from(bodyGeometry.attributes.position.array);
-  const bodyMaterial = new THREE.MeshPhysicalMaterial({
-    color: 0xd98222, roughness: 0.52, metalness: 0.05, clearcoat: 0.16,
-  });
-  bodyMaterial.onBeforeCompile = (shader) => {
-    shader.fragmentShader = shader.fragmentShader.replace(
-      "#include <color_fragment>",
-      `#include <color_fragment>
-       diffuseColor.rgb *= mix(vec3(0.70, 0.38, 0.10), vec3(1.14, 0.78, 0.28), smoothstep(-0.7, 0.6, vNormal.y));`,
-    );
-  };
-  bodyMaterial.customProgramCacheKey = () => "bespoke-honey-gourami-v1";
+  const bodyMaterial = skinMaterial();
   const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
   body.name = "Honey gourami articulated body";
   body.castShadow = body.receiveShadow = true;
   root.add(body);
 
-  const finMaterial = new THREE.MeshPhysicalMaterial({
-    color: 0xf0b348, transparent: true, opacity: 0.48,
-    roughness: 0.48, side: THREE.DoubleSide, depthWrite: false,
-  });
-  const dorsal = new THREE.Mesh(shapedFin((shape) => {
-    shape.moveTo(0.34, 0.22);
-    shape.quadraticCurveTo(0.12, 0.62, -0.2, 0.58);
-    shape.quadraticCurveTo(-0.56, 0.52, -0.72, 0.25);
-    shape.lineTo(-0.62, 0.17);
-    shape.lineTo(0.34, 0.22);
-  }), finMaterial);
+  const dorsalRoots = line(0.33, -0.54, 15, (x) => [x, bodyProfile(x).centre + bodyProfile(x).upper - 0.006, 0]);
+  const dorsalTips = line(0.33, -0.54, 15, (x, p) => [
+    x - 0.025 * p, bodyProfile(x).centre + bodyProfile(x).upper + 0.11 + 0.09 * Math.sin(Math.PI * p), 0,
+  ]);
+  const dorsal = new THREE.Mesh(finSurface(dorsalRoots, dorsalTips), finMaterial(15));
   dorsal.name = "Honey gourami articulated dorsal fin";
-  const anal = new THREE.Mesh(shapedFin((shape) => {
-    shape.moveTo(0.32, -0.18);
-    shape.quadraticCurveTo(0.05, -0.58, -0.28, -0.55);
-    shape.quadraticCurveTo(-0.58, -0.48, -0.74, -0.25);
-    shape.lineTo(-0.62, -0.16);
-    shape.lineTo(0.32, -0.18);
-  }), finMaterial);
+  const analRoots = line(0.29, -0.57, 17, (x) => [x, bodyProfile(x).centre - bodyProfile(x).lower + 0.006, 0]);
+  const analTips = line(0.29, -0.57, 17, (x, p) => [
+    x - 0.035 * p, bodyProfile(x).centre - bodyProfile(x).lower - 0.11 - 0.07 * Math.sin(Math.PI * p), 0,
+  ]);
+  const anal = new THREE.Mesh(finSurface(analRoots, analTips), finMaterial(17));
   anal.name = "Honey gourami articulated anal fin";
   root.add(dorsal, anal);
 
-  const tailGeometry = shapedFin((shape) => {
-    shape.moveTo(-0.62, 0);
-    shape.quadraticCurveTo(-1.2, 0.56, -1.45, 0.16);
-    shape.quadraticCurveTo(-1.52, 0, -1.45, -0.16);
-    shape.quadraticCurveTo(-1.2, -0.56, -0.62, 0);
-  });
-  const tail = new THREE.Mesh(tailGeometry, finMaterial);
+  const tailRoots = line(0.11, -0.11, 17, (y) => [-0.58, y, 0]);
+  const tailTips = line(0.25, -0.25, 17, (y, p) => [
+    -0.92 - 0.055 * Math.sin(Math.PI * p), y, 0,
+  ]);
+  const tail = new THREE.Mesh(finSurface(tailRoots, tailTips, { steps: 10, cup: 0.016 }), finMaterial(17, 0.68));
   tail.name = "Honey gourami articulated tail";
   root.add(tail);
 
-  const pectoralGeometry = finGeometry([[0, 0, 0], [-0.28, 0.22, 0], [-0.42, -0.16, 0]], [0, 1, 2]);
   const pectorals = [];
   for (const side of [-1, 1]) {
-    const pivot = new THREE.Group();
-    pivot.position.set(0.3, -0.03, side * 0.17);
-    const mesh = new THREE.Mesh(pectoralGeometry, finMaterial);
+    const roots = line(0.31, 0.19, 9, (x, p) => [x, -0.01 - p * 0.08, side * (bodyProfile(x).width - 0.003)]);
+    const tips = line(0.18, -0.13, 9, (x, p) => [x, 0.03 - p * 0.13, side * (0.22 + 0.035 * Math.sin(Math.PI * p))]);
+    const mesh = new THREE.Mesh(finSurface(roots, tips, { steps: 8, cup: side * 0.008 }), finMaterial(9, 0.42));
     mesh.name = `Honey gourami ${side < 0 ? "left" : "right"} pectoral fin`;
-    mesh.rotation.y = side * 0.7;
-    pivot.add(mesh);
-    root.add(pivot);
-    pectorals.push({ side, pivot });
+    root.add(mesh);
+    pectorals.push({ side, mesh, base: Float32Array.from(mesh.geometry.attributes.position.array) });
   }
 
   const feelerMaterial = new THREE.MeshStandardMaterial({ color: 0xffd56b, roughness: 0.65 });
   const feelers = [];
   for (const side of [-1, 1]) {
     const curve = new THREE.CatmullRomCurve3([
-      new THREE.Vector3(0.3, -0.24, side * 0.1),
-      new THREE.Vector3(0.2, -0.58, side * 0.13),
-      new THREE.Vector3(0.08, -0.94, side * 0.16),
+      new THREE.Vector3(0.22, -0.18, side * 0.075),
+      new THREE.Vector3(0.16, -0.43, side * 0.10),
+      new THREE.Vector3(0.04, -0.72, side * 0.13),
     ]);
-    const line = new THREE.Mesh(new THREE.TubeGeometry(curve, 12, 0.014, 6, false), feelerMaterial);
-    line.name = "Honey gourami pelvic feeler";
-    root.add(line);
-    feelers.push({ side, line });
+    const feeler = new THREE.Mesh(new THREE.TubeGeometry(curve, 16, 0.006, 5, false), feelerMaterial);
+    feeler.name = "Honey gourami pelvic feeler";
+    root.add(feeler);
+    feelers.push({ side, line: feeler });
   }
 
-  const eyeMaterial = new THREE.MeshStandardMaterial({ color: 0x090704, roughness: 0.25 });
+  const eyeMaterial = new THREE.MeshPhysicalMaterial({ color: 0x6b4213, roughness: 0.22, clearcoat: 0.4 });
+  const pupilMaterial = new THREE.MeshStandardMaterial({ color: 0x050403, roughness: 0.18 });
   for (const side of [-1, 1]) {
-    const eye = new THREE.Mesh(new THREE.SphereGeometry(0.055, 12, 8), eyeMaterial);
-    eye.position.set(0.48, 0.12, side * 0.165);
-    root.add(eye);
+    const eye = new THREE.Mesh(new THREE.SphereGeometry(0.052, 18, 12), eyeMaterial);
+    eye.position.set(0.43, 0.082, side * 0.092);
+    const pupil = new THREE.Mesh(new THREE.CircleGeometry(0.027, 18), pupilMaterial);
+    pupil.position.set(0.43, 0.082, side * 0.139);
+    if (side < 0) pupil.rotation.y = Math.PI;
+    root.add(eye, pupil);
   }
-  const mouthMaterial = new THREE.MeshStandardMaterial({ color: 0x2d160b, roughness: 0.6 });
-  const mouth = new THREE.Mesh(new THREE.TorusGeometry(0.045, 0.016, 8, 16), mouthMaterial);
-  mouth.position.set(0.66, -0.04, 0);
-  root.add(mouth);
 
   function bendPoint(x, y, z, out = new THREE.Vector3()) {
     const t = clamp((0.62 - x) / SPINE_LENGTH, 0, 1) * (HONEY_JOINTS - 1);
@@ -445,10 +548,26 @@ export function createHoneyGouramiRenderer(scene, simulation) {
     );
   }
 
-  function deformGeometry(geometry, base, flutter = 0) {
+  function deformGeometry(geometry, base, flutter = 0, pectoral = null) {
     const position = geometry.attributes.position;
+    const progress = geometry.attributes.aFinProgress;
     for (let i = 0; i < position.count; i++) {
-      const x = base[i * 3], y = base[i * 3 + 1], z = base[i * 3 + 2];
+      const x = base[i * 3];
+      let y = base[i * 3 + 1];
+      let z = base[i * 3 + 2];
+      if (geometry === bodyGeometry) {
+        // The gape is anatomy, not a torus pasted on the snout. The lower lip and jaw
+        // drop during a gulp or strike, while the opercular region expands as it breathes.
+        const snout = smooth(clamp((x - 0.48) / 0.18, 0, 1));
+        if (y < -0.005) y -= simulation.state.mouth * snout * 0.026;
+        const branchial = smoothstep(0.05, 0.3, x) * (1 - smoothstep(0.3, 0.48, x));
+        z *= 1 + simulation.state.breath * branchial * 0.055;
+      }
+      if (pectoral) {
+        const reach = progress.getX(i);
+        const beat = Math.sin(simulation.state.pectoralPhase + (pectoral.side < 0 ? Math.PI : 0));
+        z += pectoral.side * reach * beat * simulation.state.pectoralEffort * 0.075;
+      }
       const loose = clamp((0.35 - x) / 1.8, 0, 1);
       bendPoint(
         x,
@@ -469,31 +588,21 @@ export function createHoneyGouramiRenderer(scene, simulation) {
     const state = simulation.state;
     root.position.copy(state.position);
     root.rotation.set(0, -state.yaw, state.pitch, "YXZ");
-    root.scale.setScalar(0.92 * scale);
-    // Author a deep, laterally thin gourami body before applying the spine.
-    const authored = new Float32Array(baseBody.length);
-    for (let i = 0; i < baseBody.length; i += 3) {
-      authored[i] = baseBody[i] * 0.67;
-      const gill = baseBody[i] > 0.12 ? 1 + state.breath * 0.025 : 1;
-      authored[i + 1] = baseBody[i + 1] * 0.38 * gill;
-      authored[i + 2] = baseBody[i + 2] * 0.145 * gill;
-    }
-    deformGeometry(bodyGeometry, authored);
+    root.scale.setScalar(1.12 * scale);
+    deformGeometry(bodyGeometry, baseBody);
     for (const item of median)
-      deformGeometry(item.mesh.geometry, item.base, 0.025 + state.tailEffort * 0.035);
-    for (const { side, pivot } of pectorals) {
-      const beat = Math.sin(state.pectoralPhase + (side < 0 ? Math.PI : 0));
-      pivot.rotation.x = side * (0.35 + beat * 0.55 * state.pectoralEffort);
-      pivot.rotation.z = beat * 0.15;
-      pivot.updateMatrix();
-    }
+      deformGeometry(item.mesh.geometry, item.base, 0.008 + state.tailEffort * 0.022);
+    for (const item of pectorals)
+      deformGeometry(item.mesh.geometry, item.base, 0, item);
     for (const { side, line } of feelers) {
       line.rotation.z = Math.sin(state.time * 1.1 + side) * 0.06;
       line.rotation.x = side * Math.sin(state.time * 0.9) * 0.04;
       line.updateMatrix();
     }
-    mouth.scale.set(1 + state.mouth * 1.2, 1 + state.mouth * 0.8, 1 + state.mouth * 0.8);
-    mouth.updateMatrix();
+    if (bodyMaterial.userData.shader) {
+      bodyMaterial.userData.shader.uniforms.uMouth.value = state.mouth;
+      bodyMaterial.userData.shader.uniforms.uBreath.value = state.breath;
+    }
     root.updateMatrix();
   }
 
